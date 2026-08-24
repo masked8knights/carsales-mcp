@@ -3,7 +3,8 @@
 An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant search
 **carsales.com.au** — Australia's largest car marketplace — for used and new cars.
 
-Built for Claude Desktop, Claude Code, Cursor, and any MCP-compatible client.
+Built for Claude Desktop, Claude Code, Cursor, **opencode**, and any MCP-compatible client
+(we use it inside opencode).
 
 > [!NOTE]
 > carsales.com.au is protected by DataDome bot protection. This server drives a real
@@ -12,6 +13,25 @@ Built for Claude Desktop, Claude Code, Cursor, and any MCP-compatible client.
 > IPs — when that happens the server gracefully falls back to the rich summary card data it
 > already extracted from search (price, year, odometer, transmission, fuel, body, location).
 > On a normal residential connection the detail page usually loads fine.
+
+> [!WARNING]
+> **USE AT YOUR OWN RISK — ACCOUNT BANS, IP BANS & PHONE-NUMBER BANS ARE POSSIBLE.**
+> Authenticated actions (`save_vehicle`, `make_offer`) log into carsales.com.au **as your real
+> account** by replaying cookies you exported from your browser. carsales' terms of service
+> prohibit automated access, and automated login / scripting can get your account **suspended or
+> permanently banned**, your **IP address blocked**, and — because a phone number is often required
+> to create/verify an account — a **phone number flagged or burned** with no recourse. This risk is
+> **yours**, not the tool's. In practice:
+> - Prefer doing saved-search / contact actions **manually in your browser**; use these tools only
+>   when you accept the risk.
+> - **Don't burn a primary account.** A throwaway/secondary account is strongly recommended.
+> - Creating fresh accounts purely to automate **may still be banned**, and **phone-number
+>   verification is often required and can itself be blocked/flagged** — so a throwaway number may
+>   not save you. Assume any account used for automation can be lost.
+> - These tools contact **real people about real money**. Always keep a human in the loop (the
+>   built-in `confirm: true` gate) and verify listings independently (PPSR, rego, VIN, inspection)
+>   before committing. The same-offer-twice guard also refuses to re-message a seller.
+> - Solving CAPTCHAs may breach a site's terms of service (opt-in `CARS_CAPTCHA_SOLVER`; your call).
 
 ## Tools
 
@@ -77,7 +97,8 @@ with a short `why:` explanation, so the AI can proactively surface bargains. The
 - **`search_all_cars`** — the one-shot "find me a car" tool: searches **carsales**,
   **Facebook Marketplace** and **Gumtree**, returns combined, de-duplicated results tagged by
   source (`[carsales]` / `[facebook]` / `[gumtree]`), filtered, good-deal-sorted, with a deal
-  summary. Params mirror `search_cars` plus `location` (for Facebook/Gumtree) and `goodDealsOnly`.
+  summary. Params mirror `search_cars` plus `location` (for Facebook/Gumtree), `radius` (search
+  radius in km) and `goodDealsOnly`. Set `cluster: true` to append a **by-area** grouping.
 
 > Everything here is **100% FOSS** — no paid API keys (Carapis/RedBook/PPSR) are required for
 > any feature. Paid equivalents are noted only where they’d add data we deliberately don’t pay for.
@@ -86,6 +107,7 @@ with a short `why:` explanation, so the AI can proactively surface bargains. The
 
 - **`search_gumtree_cars`** — native Gumtree.com.au car search (HTML-scraped through the same
   hardened browser stack; best-effort, like the rest). Adds a third free marketplace to cover.
+  `radius` (km) is accepted best-effort.
 - **`price_insight`** — free valuation. Builds a fair-price band (median + 25th/75th percentile)
   from **free comparable carsales listings** for the same make/model/year. The paid alternative is
   RedBook/CarHistory; we approximate it for $0 and never call a paid endpoint.
@@ -100,6 +122,17 @@ with a short `why:` explanation, so the AI can proactively surface bargains. The
   out of scope — the tool always returns the official manual URL so a human can verify. Government
   rego pages are often CAPTCHA / datacenter-blocked, so the automated lookup may return nothing; in
   that case verify manually at the URL provided.
+- **`get_listing_details` / `compare_listings`** work for **all three sites** (carsales, Facebook,
+  Gumtree) — non-carsales URLs are scraped generically and return multiple photos, so the AI can
+  actually *see* the car on every source.
+- **`dealer_info`** — reputation check. Scrapes a carsales **dealer** star rating + review count
+  (best-effort). Facebook/Gumtree are mostly private sellers with no dealer rating, so it just
+  flags that and reminds you to verify the individual listing. Check before contacting anyone.
+- **Radius:** `search_facebook_cars` honours `radius` (km) around the location; `search_gumtree_cars`
+  accepts it best-effort. `search_cars` supports `postcode` + `radius` (carsales facet).
+- **`watch_listing`** — watch a **single** listing for a **price drop** (FOSS alerts). `check_watch`
+  on it reports a drop (or any price change) vs the last check. Pairs with `watch_search` (new
+  listings) for full coverage.
 
 > `secondhand-mcp` (optional dependency) remains available for **eBay / Depop /
 > Poshmark** and other non-car marketplaces, avoiding overlap with the native
@@ -108,21 +141,9 @@ with a short `why:` explanation, so the AI can proactively surface bargains. The
 ## Login & authenticated actions
 
 > [!WARNING]
-> **USE AT YOUR OWN RISK — account bans are possible.**
-> Authenticated actions (`save_vehicle`, `make_offer`) log into carsales.com.au **as your
-> real account** by replaying cookies you exported from your browser. carsales' terms of
-> service prohibit automated access, and automated login / scripting can get your account
-> **suspended or permanently banned** — with no recourse. This risk is **yours**, not the
-> tool's. In practice:
-> - Prefer doing saved-search / contact actions **manually in your browser**; use these
->   tools only when you accept the risk.
-> - **Don't burn a primary account.** A throwaway/secondary account is strongly recommended.
-> - Creating fresh accounts purely to automate **may still be banned**, and **phone-number
->   verification is often required and can itself be blocked/flagged** — so a throwaway
->   number may not save you. Assume any account used for automation can be lost.
-> - These tools contact **real people about real money**. Always keep a human in the loop
->   (the built-in `confirm: true` gate) and verify listings independently (PPSR, rego, VIN,
->   inspection) before committing.
+> **Account / IP / phone-number bans are possible.** Read the full warning at the **top of this
+> README** before using any authenticated action. TL;DR: use a throwaway account, keep a human in
+> the loop (`confirm: true`), and accept that automation can get you banned with no recourse.
 
 Some carsales actions require an account. Because this server runs headless, you log in by
 importing cookies from your own browser (not by typing credentials into the bot):
@@ -223,6 +244,19 @@ npx playwright install chromium   # downloads the full Chromium build (needed!)
 **Claude Code** — `~/.claude/.mcp.json`:
 
 ```json
+{
+  "mcpServers": {
+    "carsales": {
+      "command": "npx",
+      "args": ["-y", "carsales-mcp"]
+    }
+  }
+}
+```
+
+**opencode** — add to your `opencode.jsonc` (or `~/.config/opencode/opencode.jsonc`):
+
+```jsonc
 {
   "mcpServers": {
     "carsales": {

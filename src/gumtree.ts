@@ -20,6 +20,7 @@ export interface GumtreeSearchParams {
   minPrice?: number;
   maxPrice?: number;
   limit?: number;
+  radius?: number;
 }
 
 function num(s: string | null | undefined): number | null {
@@ -90,6 +91,7 @@ export async function searchGumtreeCars(p: GumtreeSearchParams): Promise<Listing
   if (p.location) params.set('q', p.location);
   if (p.minPrice != null) params.set('price-min', String(p.minPrice));
   if (p.maxPrice != null) params.set('price-max', String(p.maxPrice));
+  if (p.radius != null) params.set('distance', String(p.radius)); // best-effort; Gumtree may ignore
   const qs = params.toString();
   if (qs) url += '?' + qs;
   const html = await fetchSearchHtml(url, page);

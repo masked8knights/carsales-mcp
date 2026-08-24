@@ -23,6 +23,7 @@ export interface FacebookSearchParams {
   minPrice?: number;
   maxPrice?: number;
   limit?: number;
+  radius?: number;
 }
 
 function num(s: string | null | undefined): number | null {
@@ -156,7 +157,7 @@ export async function searchFacebookCars(p: FacebookSearchParams): Promise<Listi
         filter_location_longitude: coords.longitude,
         filter_price_lower_bound: p.minPrice ?? 0,
         filter_price_upper_bound: p.maxPrice ?? MAX_PRICE_SENTINEL,
-        filter_radius_km: 50,
+        filter_radius_km: p.radius ?? 50,
       },
       custom_request_params: { surface: 'SEARCH' },
     },

@@ -12,6 +12,7 @@ import {
   authCookieFile,
   ListingCard,
   Page,
+  describeGenericListing,
 } from './browser.js';
 import { buildSearchUrl, SearchParams } from './url.js';
 import { parseDetails } from './details.js';
@@ -20,7 +21,16 @@ import { searchFacebookCars } from './facebook.js';
 import { searchGumtreeCars } from './gumtree.js';
 import { computeDeal } from './deal.js';
 import { computePriceInsight, formatInsight } from './insight.js';
-import { addWatch, listWatches, removeWatch, runWatch, WatchSource } from './watch.js';
+import {
+  addWatch,
+  addListingWatch,
+  listWatches,
+  removeWatch,
+  runWatch,
+  getWatch,
+  setWatchLastPrice,
+  WatchSource,
+} from './watch.js';
 import { checkVehicle } from './vehicle.js';
 import { hasIdenticalOffer, hasRecentOffer, recordOffer } from './offers.js';
 
@@ -188,6 +198,21 @@ async function describeListing(
   const idMatch = target.match(/([A-Z]{3,4}-AD-\d+)/);
   const id = idMatch ? idMatch[1] : listingId || 'unknown';
   const page = await getPage();
+  // Non-carsales listings (Facebook / Gumtree): use the generic scraper so
+  // get_listing_details and compare_listings work across all three sites.
+  if (!/carsales\.com\.au\/cars\/details/.test(target)) {
+    const g = await describeGenericListing(target, page);
+    const source = /facebook\.com/.test(target) ? 'facebook' : /gumtree\.com\.au/.test(target) ? 'gumtree' : 'unknown';
+    return {
+      id,
+      title: g.title,
+      text: g.text,
+      url: target,
+      metadata: { price: g.price, description: g.description, source, photos: g.imageUrls.length },
+      blocked: g.blocked,
+      imageUrls: g.imageUrls,
+    };
+  }
   const html = await fetchHtml(target, page);
   const blocked = html.length < 6000 || html.toLowerCase().includes('captcha-delivery');
   if (!blocked) {
@@ -307,78 +332,6 @@ server.tool(
     const page = await getPage();
     const imgs = includeImages ? await downloadImages(page, d.imageUrls, 8) : [];
     return { content: [{ type: 'text', text: d.text + `\n\nURL: ${d.url}` }, ...imgs] };
-  },
-);
-
-server.tool(
-  'search',
-  'Deep-research search across carsales.com.au. Returns { results: [{ id, title, text, url }] } ' +
-    'where id is "carsales:<listingId>" (pass to fetch). Mirrors the ChatGPT Deep Research tool contract.',
-  {
-    query: z.string().describe('Free-text search, e.g. "toyota camry victoria under 30000"'),
-    includeImages: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe('Also return each listing’s photo as an image block so the model can see them'),
-  },
-  async ({ query, includeImages }) => {
-    const cards = await searchCars({ keyword: query, limit: 20 } as SearchParams);
-    const results = cards.map((c) => {
-      const deal = computeDeal(c);
-      return {
-        id: 'carsales:' + c.id,
-        title: c.title,
-        text: (deal.isGoodDeal ? `[${deal.label.toUpperCase()} DEAL] ` : '') + cardSummary(c),
-        url: c.url,
-        image: c.image,
-        deal,
-      };
-    });
-    const content: any[] = [{ type: 'text', text: JSON.stringify({ results }, null, 2) }];
-    if (includeImages) {
-      const page = await getPage();
-      for (const c of cards) if (c.image) content.push(...(await downloadImages(page, [c.image], 1)));
-    }
-    return { content };
-  },
-);
-
-server.tool(
-  'fetch',
-  'Deep-research fetch: full details for a search-result id (e.g. "carsales:OAG-AD-26099426") ' +
-    'or a listing URL. Returns { id, title, text, url, metadata }. Mirrors the ChatGPT Deep Research tool contract.',
-  {
-    id: z.string().describe('Listing id from search() (with carsales: prefix) or a full URL'),
-    includeImages: z
-      .boolean()
-      .optional()
-      .default(true)
-      .describe('Download listing photos and return them as image blocks so the model can see them'),
-  },
-  async ({ id, includeImages }) => {
-    const realId = id.replace(/^carsales:/, '');
-    let target: string;
-    if (/^https?:\/\//.test(realId)) target = realId;
-    else if (/^[A-Z]{3,4}-AD-/.test(realId) || /\//.test(realId))
-      target = `https://www.carsales.com.au/cars/details/${realId}/`;
-    else target = realId;
-    const d = await describeListing(undefined, target, includeImages);
-    const page = await getPage();
-    const imgs = includeImages ? await downloadImages(page, d.imageUrls, 8) : [];
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            { id: d.id, title: d.title, text: d.text, url: d.url, metadata: d.metadata },
-            null,
-            2,
-          ),
-        },
-        ...imgs,
-      ],
-    };
   },
 );
 
@@ -789,15 +742,17 @@ server.tool(
     maxPrice: z.number().optional().describe('Maximum price in AUD'),
     minYear: z.number().optional().describe('Minimum build year'),
     maxYear: z.number().optional().describe('Maximum build year'),
+    radius: z.number().optional().default(50).describe('Facebook search radius in km around the location'),
     goodDealsOnly: z.boolean().optional().default(false).describe('Only return GOOD/GREAT deals'),
+    cluster: z.boolean().optional().default(false).describe('Append a "by area" grouping of results'),
     limit: z.number().optional().default(30).describe('Max total results to return'),
   },
-  async ({ make, model, location, state, minPrice, maxPrice, minYear, maxYear, goodDealsOnly, limit }) => {
+  async ({ make, model, location, state, minPrice, maxPrice, minYear, maxYear, radius, goodDealsOnly, cluster, limit }) => {
     const query = [make, model].filter(Boolean).join(' ');
     const [csRes, fbRes, gtRes] = await Promise.allSettled([
       searchCars({ make, model, state, minPrice, maxPrice, minYear, maxYear, limit: 100 } as SearchParams),
-      searchFacebookCars({ query, location, minPrice, maxPrice, limit: 40 }),
-      searchGumtreeCars({ query, location, minPrice, maxPrice, limit: 40 }),
+      searchFacebookCars({ query, location, minPrice, maxPrice, radius, limit: 40 }),
+      searchGumtreeCars({ query, location, minPrice, maxPrice, radius, limit: 40 }),
     ]);
     const carsales = csRes.status === 'fulfilled' ? csRes.value : [];
     const facebook = fbRes.status === 'fulfilled' ? fbRes.value : [];
@@ -823,13 +778,28 @@ server.tool(
       return { content: [{ type: 'text', text: 'No combined listings matched your criteria.' }] };
     const goodCount = limited.filter((c) => deals.get(c.source + ':' + c.id)!.isGoodDeal).length;
     const text = limited.map((c, i) => `${i + 1}. ${formatSourceCard(c)}`).join('\n');
+    let clusterLine = '';
+    if (cluster) {
+      const byArea = new Map<string, number>();
+      for (const c of limited) {
+        const area =
+          c.source === 'carsales'
+            ? c.state || 'unknown'
+            : c.source === 'facebook'
+              ? c.location || 'unknown'
+              : 'unknown';
+        byArea.set(area, (byArea.get(area) ?? 0) + 1);
+      }
+      const parts = [...byArea.entries()].sort((a, b) => b[1] - a[1]).map(([a, n]) => `${a}: ${n}`);
+      clusterLine = `\n\nBy area: ${parts.join('  |  ')}`;
+    }
     return {
       content: [
         {
           type: 'text',
           text:
             `Combined search across carsales (${carsales.length}) + Facebook (${facebook.length}) + Gumtree (${gumtree.length}) ` +
-            `-> showing ${limited.length}${goodCount ? `, ${goodCount} good deals` : ''}.\n\n${text}`,
+            `-> showing ${limited.length}${goodCount ? `, ${goodCount} good deals` : ''}.\n\n${text}${clusterLine}`,
         },
       ],
     };
@@ -845,12 +815,13 @@ server.tool(
     location: z.string().optional().describe('Gumtree location filter, e.g. "sydney"'),
     minPrice: z.number().optional().describe('Minimum price in AUD'),
     maxPrice: z.number().optional().describe('Maximum price in AUD'),
+    radius: z.number().optional().describe('Search radius in km around the location (best-effort; Gumtree may ignore)'),
     limit: z.number().optional().default(20).describe('Max results to return'),
   },
-  async ({ query, location, minPrice, maxPrice, limit }) => {
+  async ({ query, location, minPrice, maxPrice, radius, limit }) => {
     let cards: ListingCard[];
     try {
-      cards = await searchGumtreeCars({ query, location, minPrice, maxPrice, limit });
+      cards = await searchGumtreeCars({ query, location, minPrice, maxPrice, radius, limit });
     } catch (e) {
       return { content: [{ type: 'text', text: 'Gumtree search failed: ' + (e as Error).message }] };
     }
@@ -1048,8 +1019,32 @@ server.tool(
 );
 
 server.tool(
+  'watch_listing',
+  'Watch a SINGLE listing for a PRICE DROP (FOSS alerts — no paid service). Re-run check_watch ' +
+    'later to see if the price changed (especially a drop). Works for carsales, Facebook and ' +
+    'Gumtree listing URLs.',
+  {
+    name: z.string().describe('Watch name, e.g. "corolla-abc123"'),
+    listingId: z.string().optional().describe('carsales listing id, e.g. OAG-AD-26099426'),
+    url: z.string().optional().describe('Full listing URL (carsales / Facebook / Gumtree)'),
+  },
+  async ({ name, listingId, url }) => {
+    if (!listingId && !url) return { content: [{ type: 'text', text: 'Provide listingId or url.' }] };
+    const w = addListingWatch(name, listingId, url);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Watching listing "${name}". Call check_watch with this name to detect a price drop.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'list_watches',
-  'List all saved search watches (see watch_search).',
+  'List all saved watches (search watches and listing price-drop watches).',
   {},
   async () => {
     const ws = listWatches();
@@ -1058,7 +1053,13 @@ server.tool(
       content: [
         {
           type: 'text',
-          text: ws.map((w) => `- ${w.name} [${w.sources.join(', ')}] (last seen ${w.lastIds.length} listings)`).join('\n'),
+          text: ws
+            .map((w) =>
+              w.type === 'listing'
+                ? `- ${w.name} [listing] ${w.url || w.listingId} (last price: ${w.lastPrice ?? 'unknown'})`
+                : `- ${w.name} [${w.sources.join(', ')}] (last seen ${w.lastIds.length} listings)`,
+            )
+            .join('\n'),
         },
       ],
     };
@@ -1067,12 +1068,42 @@ server.tool(
 
 server.tool(
   'check_watch',
-  'Re-run a saved watch (watch_search) and report listings NEW since the last check. Pure local ' +
-    'diff over free search results — no paid alert service.',
+  'Re-run a saved watch and report what changed. For search watches: NEW listings since the last ' +
+    'check. For listing watches: a PRICE DROP (or any price change). Pure local diff over free ' +
+    'search results — no paid alert service.',
   {
     name: z.string().describe('Watch name to check'),
   },
   async ({ name }) => {
+    const w = getWatch(name);
+    if (!w) return { content: [{ type: 'text', text: `No watch named "${name}".` }] };
+    if (w.type === 'listing') {
+      const target = w.url || (w.listingId ? `https://www.carsales.com.au/cars/details/${w.listingId}/` : '');
+      if (!target) return { content: [{ type: 'text', text: `Watch "${name}" has no listing URL/id.` }] };
+      const d = await describeListing(w.listingId, target, false);
+      const price = (d.metadata as Record<string, unknown>).price as number | null | undefined;
+      const prev = w.lastPrice ?? null;
+      setWatchLastPrice(name, price ?? null);
+      if (prev != null && price != null && price < prev)
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `PRICE DROP on "${name}": ${'$' + Math.round(prev).toLocaleString()} → ${'$' + Math.round(price).toLocaleString()} (-${'$' + Math.round(prev - price).toLocaleString()}).\n${d.url}`,
+            },
+          ],
+        };
+      if (prev == null)
+        return { content: [{ type: 'text', text: `Now watching "${name}" — current price ${price != null ? '$' + Math.round(price).toLocaleString() : 'unknown'}.\n${d.url}` }] };
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `No drop on "${name}" — still ${price != null ? '$' + Math.round(price).toLocaleString() : 'unknown'} (was ${'$' + Math.round(prev).toLocaleString()}).\n${d.url}`,
+          },
+        ],
+      };
+    }
     const res = await runWatch(name);
     if (!res) return { content: [{ type: 'text', text: `No watch named "${name}".` }] };
     if (!res.newCards.length)
@@ -1114,6 +1145,68 @@ server.tool(
           text:
             `Vehicle check (${r.plate}, ${r.state}) — automated: ${r.automated ? 'some data' : 'none'}.\n\n` +
             `${r.text}\n\nManual verification (human-in-the-loop): ${r.manualUrl}`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'dealer_info',
+  'Look up a seller/dealer reputation. For carsales dealer pages this scrapes the star rating + ' +
+    'review count (best-effort). Facebook and Gumtree are mostly PRIVATE sellers with no dealer ' +
+    'rating — for those it just confirms the seller type. Use before contacting anyone.',
+  {
+    url: z.string().optional().describe('carsales dealer page URL (or any listing URL)'),
+    name: z.string().optional().describe('Dealer/seller name to echo'),
+  },
+  async ({ url, name }) => {
+    if (!url) {
+      return {
+        content: [
+          { type: 'text', text: name ? `Seller: ${name} (provide a URL to look up reputation).` : 'Provide a url.' },
+        ],
+      };
+    }
+    if (/facebook\.com|gumtree\.com\.au/.test(url)) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `That URL is on ${/facebook\.com/.test(url) ? 'Facebook Marketplace' : 'Gumtree'} — ` +
+              `these are predominantly PRIVATE sellers with no dealer rating. Verify the individual ` +
+              `listing and meet in a safe, public place. Never pay before inspecting the car.`,
+          },
+        ],
+      };
+    }
+    const page = await getPage();
+    const html = await fetchHtml(url, page);
+    const ratingM =
+      html.match(/"ratingValue"\s*:\s*([\d.]+)/i) ||
+      html.match(/([\d](?:\.\d)?)\s*(?:out of|\/)\s*5/i) ||
+      html.match(/([\d.]+)-?\s*star/i);
+    const reviewsM = html.match(/(\d[\d,]*)\s*(?:reviews?|ratings?)/i);
+    const rating = ratingM ? Number(ratingM[1]) : null;
+    const reviews = reviewsM ? Number(reviewsM[1].replace(/,/g, '')) : null;
+    if (rating == null && reviews == null)
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'Could not extract a dealer rating from that page (markup may differ or it is a private listing). ' +
+              'Verify independently before committing.',
+          },
+        ],
+      };
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Dealer reputation (best-effort): ${name ? name + ' — ' : ''}` +
+            `${rating != null ? `rating ${rating}/5` : 'rating n/a'}` +
+            `${reviews != null ? ` across ${reviews} review(s)` : ''}.\n${url}`,
         },
       ],
     };

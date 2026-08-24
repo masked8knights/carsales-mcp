@@ -17,9 +17,13 @@ export type WatchSource = 'carsales' | 'gumtree' | 'facebook';
 
 export interface Watch {
   name: string;
+  type: 'search' | 'listing';
   params: SearchParams;
   sources: WatchSource[];
   lastIds: string[];
+  listingId?: string;
+  url?: string;
+  lastPrice?: number | null;
   createdAt: number;
 }
 
@@ -49,6 +53,7 @@ export function addWatch(name: string, params: SearchParams, sources: WatchSourc
   const existing = watches.find((w) => w.name === name);
   const watch: Watch = {
     name,
+    type: 'search',
     params,
     sources: sources.length ? sources : ['carsales'],
     lastIds: existing?.lastIds ?? [],
@@ -59,6 +64,39 @@ export function addWatch(name: string, params: SearchParams, sources: WatchSourc
   else watches.push(watch);
   save(watches);
   return watch;
+}
+
+export function addListingWatch(name: string, listingId?: string, url?: string): Watch {
+  const watches = load();
+  const existing = watches.find((w) => w.name === name);
+  const watch: Watch = {
+    name,
+    type: 'listing',
+    params: {} as SearchParams,
+    sources: [],
+    lastIds: [],
+    listingId,
+    url,
+    lastPrice: existing?.lastPrice ?? null,
+    createdAt: existing?.createdAt ?? Date.now(),
+  };
+  const idx = watches.findIndex((w) => w.name === name);
+  if (idx >= 0) watches[idx] = watch;
+  else watches.push(watch);
+  save(watches);
+  return watch;
+}
+
+export function getWatch(name: string): Watch | null {
+  return load().find((w) => w.name === name) ?? null;
+}
+
+export function setWatchLastPrice(name: string, price: number | null): void {
+  const watches = load();
+  const w = watches.find((x) => x.name === name);
+  if (!w) return;
+  w.lastPrice = price;
+  save(watches);
 }
 
 export function listWatches(): Watch[] {

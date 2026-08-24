@@ -520,6 +520,48 @@ export async function fetchHtml(url: string, page: Page): Promise<string> {
   return navigate(page, url);
 }
 
+/**
+ * Generic listing scraper for non-carsales URLs (Facebook Marketplace / Gumtree).
+ * Best-effort: pulls title, price, description and image URLs from OpenGraph +
+ * img tags so `get_listing_details` / `compare_listings` work for all three sites
+ * (and return multiple photos). No structured JSON-LD is assumed.
+ */
+export async function describeGenericListing(
+  url: string,
+  page: Page,
+): Promise<{
+  title: string | null;
+  price: number | null;
+  description: string | null;
+  imageUrls: string[];
+  text: string;
+  blocked: boolean;
+}> {
+  const html = await navigate(page, url);
+  const blocked = html.length < 4000 || /captcha-delivery/i.test(html.toLowerCase());
+  const ogTitle = html.match(/<meta property="og:title" content="([^"]+)"/i);
+  const titleTag = html.match(/<title>([^<]+)<\/title>/i);
+  const title = ogTitle
+    ? decodeEntities(ogTitle[1]).trim()
+    : titleTag
+      ? decodeEntities(titleTag[1]).replace(/\s*\|?\s*(Gumtree|Facebook).*$/i, '').trim()
+      : null;
+  const descM =
+    html.match(/<meta name="description" content="([^"]+)"/i) ||
+    html.match(/<meta property="og:description" content="([^"]+)"/i);
+  const description = descM ? decodeEntities(descM[1]).trim() : null;
+  const priceM = html.match(/\$([\d,]{3,})/);
+  const price = priceM ? Number(priceM[1].replace(/[^0-9]/g, '')) : null;
+  const imgs: string[] = [];
+  for (const m of html.matchAll(/<meta property="og:image" content="([^"]+)"/gi)) imgs.push(m[1]);
+  for (const m of html.matchAll(/<img[^>]+src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/gi)) imgs.push(m[1]);
+  const imageUrls = [...new Set(imgs)].slice(0, 12);
+  const text = [title, price != null ? `Price: $${price.toLocaleString()}` : null, description]
+    .filter(Boolean)
+    .join('\n');
+  return { title, price, description, imageUrls, text, blocked };
+}
+
 export async function closeBrowser(): Promise<void> {
   if (browser) {
     await browser.close().catch(() => {});
