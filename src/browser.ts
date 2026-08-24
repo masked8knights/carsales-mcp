@@ -47,6 +47,16 @@ const MIN_DELAY = Number(process.env.CARS_MIN_DELAY || 1500);
 const MAX_RETRIES = Number(process.env.CARS_RETRIES || 3);
 const BACKOFF = Number(process.env.CARS_BACKOFF || 2000);
 
+// Optional FOSS CAPTCHA help. The only free, open-source solver we wire in is
+// Buster (https://github.com/dessant/buster, MIT) — it solves hCaptcha/reCAPTCHA
+// *audio* challenges locally via the browser's Web Speech API (no paid service).
+// It loads as a Chromium extension, so it only applies when ENGINE=chromium and
+// the user points CARS_BUSTER_EXTENSION at their installed copy. It does NOT
+// defeat behavioural bot-protection like DataDome (carsales' own stack) — that
+// relies on avoidance (residential IP + Camoufox + proxy). Default: off.
+const CAPTCHA_SOLVER = (process.env.CARS_CAPTCHA_SOLVER || 'none').toLowerCase();
+const BUSTER_EXT = process.env.CARS_BUSTER_EXTENSION || '';
+
 // Authenticated sessions: cookies are persisted to this file so a user can log
 // in once (via set_auth / a real browser) and have the session reused across
 // runs and tool calls. Carsales unlocks extra actions (saving a vehicle, making
@@ -96,14 +106,16 @@ async function launchCamoufox(latest: boolean): Promise<Browser> {
 }
 
 async function launchChromium(): Promise<Browser> {
-  return chromium.launch({
-    channel: 'chromium',
-    args: [
-      '--disable-blink-features=AutomationControlled',
-      '--no-sandbox',
-      '--disable-dev-shm-usage',
-    ],
-  });
+  const args = [
+    '--disable-blink-features=AutomationControlled',
+    '--no-sandbox',
+    '--disable-dev-shm-usage',
+  ];
+  if (CAPTCHA_SOLVER === 'buster' && BUSTER_EXT) {
+    args.push(`--load-extension=${BUSTER_EXT}`, `--disable-extensions-except=${BUSTER_EXT}`);
+    console.error('[carsales-mcp] CAPTCHA solver: Buster extension loaded (audio challenges).');
+  }
+  return chromium.launch({ channel: 'chromium', args });
 }
 
 // Ordered fallback chain. Default (joinc) tries the jo-inc Camoufox build first,
@@ -238,6 +250,34 @@ function isBlocked(html: string): boolean {
   return html.length < 6000 || html.toLowerCase().includes('captcha-delivery');
 }
 
+/**
+ * Best-effort FOSS CAPTCHA handling. Only does something when CARS_CAPTCHA_SOLVER=buster
+ * (the Buster extension is loaded). It detects a standard hCaptcha/reCAPTCHA widget and
+ * waits for Buster to clear it (polls up to 60s). Returns true if the challenge appears gone.
+ * Note: this will NOT solve DataDome-style behavioural challenges.
+ */
+export async function solveCaptchaIfPresent(page: Page): Promise<boolean> {
+  if (CAPTCHA_SOLVER !== 'buster') return false;
+  const frameSel = 'iframe[src*="hcaptcha"], iframe[src*="recaptcha"], iframe[title*="captcha" i]';
+  try {
+    if ((await page.locator(frameSel).count()) === 0) return false;
+    console.error('[carsales-mcp] CAPTCHA widget detected — Buster attempting to solve...');
+    await page
+      .waitForFunction(
+        (sel: string) => {
+          const f = document.querySelector(sel) as HTMLElement | null;
+          return !f || f.offsetParent === null;
+        },
+        frameSel,
+        { timeout: 60000 },
+      )
+      .catch(() => {});
+    return (await page.locator(frameSel).count()) === 0;
+  } catch {
+    return false;
+  }
+}
+
 async function navigate(page: Page, url: string): Promise<string> {
   let lastHtml = '';
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -252,6 +292,14 @@ async function navigate(page: Page, url: string): Promise<string> {
     await page.waitForTimeout(2500);
     lastHtml = await page.content();
     if (!isBlocked(lastHtml)) return lastHtml;
+    // Blocked: try the FOSS CAPTCHA solver, then retry.
+    if (CAPTCHA_SOLVER === 'buster') {
+      const solved = await solveCaptchaIfPresent(page);
+      if (solved) {
+        lastHtml = await page.content();
+        if (!isBlocked(lastHtml)) return lastHtml;
+      }
+    }
     // Blocked: wait and (if rotating) get a fresh proxied page for next attempt.
     if (attempt < MAX_RETRIES - 1) {
       await sleep(BACKOFF * (attempt + 1));

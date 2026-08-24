@@ -268,6 +268,10 @@ Other tuning env vars:
 | `CARS_PROXY` | – | single proxy or comma-separated rotation list |
 | `CARS_COOKIE_FILE` | `~/.carsales-mcp/cookies.json` | where the login session cookies are stored |
 | `CARS_WATCH_WEBHOOK` | – | optional: POST new `watch_search` listings here (ntfy/Discord/Slack) — free alerts, no paid service |
+| `CARS_CAPTCHA_SOLVER` | `none` | FOSS CAPTCHA help: `buster` (audio-challenge solver, Chromium only). Does NOT defeat DataDome |
+| `CARS_BUSTER_EXTENSION` | – | path to your installed Buster extension (when `CARS_CAPTCHA_SOLVER=buster`) |
+| `CARS_OFFER_COOLDOWN_HOURS` | `24` | `make_offer` refuses any re-contact to the same listing within this window |
+| `CARS_OFFERS_FILE` | `~/.carsales-mcp/sent-offers.json` | append-only log of sent offers (enforces "never send the same offer twice") |
 | `CARS_MIN_DELAY` | `1500` | min ms between navigations (be polite) |
 | `CARS_RETRIES` | `3` | retry attempts when a DataDome challenge is hit |
 | `CARS_BACKOFF` | `2000` | backoff ms between retries (doubles each try) |
@@ -295,10 +299,26 @@ Other tuning env vars:
   on a DataDome challenge.
 - Failing gracefully: a blocked/403 page degrades to fewer (or zero) results, never a crash.
 
-**We deliberately do NOT have a CAPTCHA solver.** Solving DataDome/hCaptcha needs a paid service
-(2captcha etc.), which conflicts with the 100% FOSS goal. Our strategy is *avoidance* — a clean
-residential IP + Camoufox + proxy — not solving. If a site throws a CAPTCHA, the tool reports it and
-stops; verify manually in your browser.
+**We deliberately do NOT have a paid CAPTCHA solver.** Solving DataDome via 2captcha/Anti-Captcha
+conflicts with the 100% FOSS goal. Our primary strategy is *avoidance* — a clean residential IP +
+Camoufox + proxy. As an opt-in, we wire the **FOSS Buster extension** (`CARS_CAPTCHA_SOLVER=buster`,
+MIT-licensed, solves hCaptcha/reCAPTCHA *audio* challenges locally via the browser's speech
+recognition — no paid service). Caveats: it **only works on the Chromium engine** (Buster is a Chrome
+extension), it needs the user to point `CARS_BUSTER_EXTENSION` at their installed copy, and it **does
+not defeat behavioural bot-protection like DataDome** (carsales' own stack) — that still relies on
+avoidance. If a CAPTCHA appears and no solver is configured, the tool reports it and stops; verify
+manually in your browser.
+
+> Solving CAPTCHAs may breach a site's terms of service. This is opt-in and your responsibility.
+
+## Offer safety (enforced, not optional)
+
+`make_offer` will **never send the same offer twice**. Before any send it checks a persistent,
+append-only log (`CARS_OFFERS_FILE`) and refuses if: (1) an **identical** offer (same listing +
+same message + same price) was already sent, or (2) **any** offer was sent to the same listing
+within `CARS_OFFER_COOLDOWN_HOURS` (default 24). This guard is mandatory — there is no flag to
+disable it — and complements the human-in-the-loop `confirm` gate. The message you pass is always
+sent verbatim (the AI never rewrites it), and sends are paced with a short random delay.
 
 ## Self-test / regression
 

@@ -22,6 +22,7 @@ import { computeDeal } from './deal.js';
 import { computePriceInsight, formatInsight } from './insight.js';
 import { addWatch, listWatches, removeWatch, runWatch, WatchSource } from './watch.js';
 import { checkVehicle } from './vehicle.js';
+import { hasIdenticalOffer, hasRecentOffer, recordOffer } from './offers.js';
 
 const server = new McpServer({
   name: 'carsales-mcp',
@@ -564,6 +565,35 @@ server.tool(
         ],
       };
     }
+    // Enforced guard: never send the same offer twice (identical, or any offer to
+    // the same listing within the cooldown). This CANNOT be disabled.
+    const cooldownHours = Number(process.env.CARS_OFFER_COOLDOWN_HOURS || 24);
+    if (hasIdenticalOffer(target, message, price ?? null)) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              'BLOCKED: an identical offer (same listing + same message + same price) was already ' +
+              'sent and recorded. The duplicate-send guard refused to send it again. If you genuinely ' +
+              'want to re-message, change the message text or wait out the cooldown.',
+          },
+        ],
+      };
+    }
+    if (hasRecentOffer(target, cooldownHours)) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              `BLOCKED: an offer was already sent to this listing within the last ${cooldownHours}h ` +
+              '(CARS_OFFER_COOLDOWN_HOURS). The duplicate-send guard refused to contact the same seller ' +
+              'again so soon. Wait out the cooldown or use a different listing.',
+          },
+        ],
+      };
+    }
     const page = await getPage();
     try {
       await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -634,6 +664,7 @@ server.tool(
         }
       }
       await saveSession();
+      if (sent) recordOffer(target, message, price ?? null);
       return {
         content: [
           {
@@ -643,7 +674,7 @@ server.tool(
               'money. Verify the listing independently (PPSR, rego, VIN, inspection) before ' +
               'committing. No consumer protection applies to private sales.\n\n' +
               (sent
-                ? `Submitted your message to the seller for ${target} (opened via ${hitOpen}, sent via "${hitSubmit}"; best-effort — confirm in your account/outbox).`
+                ? `Submitted your message to the seller for ${target} (opened via ${hitOpen}, sent via "${hitSubmit}"; best-effort — confirm in your account/outbox). This offer is now recorded so it cannot be sent again.`
                 : `Opened the contact form for ${target} via ${hitOpen} and filled your message, but could not click a Send/Submit button (markup may differ).`),
           },
         ],
@@ -851,14 +882,41 @@ server.tool(
       limit: 100,
     } as SearchParams).catch(() => [] as ListingCard[]);
     const insight = computePriceInsight(cards);
+    let cross = '';
+    // Second, free valuation source: cross-market comparables (Gumtree + Facebook).
+    // RedBook's own endpoint is paid/form-based, so we don't hardcode it; note that
+    // carsales' own price badge is already RedBook-derived and is captured per listing.
+    const query = [make, model].filter(Boolean).join(' ');
+    const extra: ListingCard[] = [];
+    try {
+      extra.push(...(await searchGumtreeCars({ query, limit: 40 })));
+    } catch {}
+    try {
+      extra.push(...(await searchFacebookCars({ query, location: 'sydney', limit: 40 })));
+    } catch {}
+    if (extra.length) {
+      const ci = computePriceInsight(extra);
+      if (ci.count) {
+        cross =
+          `\n\nCross-market check (Gumtree + Facebook, ${ci.count} free listings): ` +
+          `median ${ci.median != null ? '$' + Math.round(ci.median).toLocaleString() : 'n/a'} ` +
+          `(25th–75th: ${ci.p25 != null ? '$' + Math.round(ci.p25).toLocaleString() : 'n/a'} – ` +
+          `${ci.p75 != null ? '$' + Math.round(ci.p75).toLocaleString() : 'n/a'}).`;
+      }
+    }
     if (!insight.count)
       return {
         content: [
-          { type: 'text', text: `No free comparable listings found for ${make} ${model ?? ''} to build a price band.` },
+          {
+            type: 'text',
+            text:
+              `No free carsales comparables found for ${make} ${model ?? ''}.` +
+              (cross || ' No cross-market listings found either.'),
+          },
         ],
       };
     return {
-      content: [{ type: 'text', text: formatInsight(insight, make, model, targetPrice ?? null) }],
+      content: [{ type: 'text', text: formatInsight(insight, make, model, targetPrice ?? null) + cross }],
     };
   },
 );
