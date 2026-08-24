@@ -29,10 +29,18 @@ const server = new McpServer({
   version: '0.1.0',
 });
 
+function priceInRange(c: ListingCard, min?: number, max?: number): boolean {
+  const p = c.price ?? c.priceExGovt;
+  if (p == null) return true; // unknown price: never exclude on a price filter
+  if (min != null && p < min) return false;
+  if (max != null && p > max) return false;
+  return true;
+}
+
 function applyPostFilters(cards: ListingCard[], p: SearchParams): ListingCard[] {
   let out = cards;
-  if (p.minPrice != null) out = out.filter((c) => (c.price ?? c.priceExGovt ?? 0) >= p.minPrice!);
-  if (p.maxPrice != null) out = out.filter((c) => (c.price ?? c.priceExGovt ?? Infinity) <= p.maxPrice!);
+  if (p.minPrice != null) out = out.filter((c) => priceInRange(c, p.minPrice, undefined));
+  if (p.maxPrice != null) out = out.filter((c) => priceInRange(c, undefined, p.maxPrice));
   if (p.minYear != null) out = out.filter((c) => (c.year ?? 0) >= p.minYear!);
   if (p.maxYear != null) out = out.filter((c) => (c.year ?? Infinity) <= p.maxYear!);
   if (p.maxOdometer != null) out = out.filter((c) => (c.odometer ?? Infinity) <= p.maxOdometer!);
@@ -447,9 +455,9 @@ server.tool(
       content: [
         {
           type: 'text',
-          text: loggedIn
-            ? 'Logged in to carsales.com.au. Authenticated actions are available.'
-            : 'Not logged in (or the account page was blocked). Use set_auth with cookies from your browser to enable saving/making offers.',
+        text: loggedIn
+          ? 'Logged in to carsales.com.au. Authenticated actions are available.'
+          : 'Could not confirm login — the account page may be blocked from this network, or you may be logged out. Use set_auth with cookies from your browser to enable saving/making offers.',
         },
       ],
     };
@@ -802,8 +810,8 @@ server.tool(
       console.error('[carsales-mcp] gumtree leg failed:', (gtRes.reason as Error).message);
 
     let cards = dedupeListings([...carsales, ...facebook, ...gumtree]);
-    if (minPrice != null) cards = cards.filter((c) => (c.price ?? c.priceExGovt ?? 0) >= minPrice);
-    if (maxPrice != null) cards = cards.filter((c) => (c.price ?? c.priceExGovt ?? Infinity) <= maxPrice);
+    if (minPrice != null) cards = cards.filter((c) => priceInRange(c, minPrice, undefined));
+    if (maxPrice != null) cards = cards.filter((c) => priceInRange(c, undefined, maxPrice));
     if (minYear != null) cards = cards.filter((c) => (c.year ?? 0) >= minYear);
     if (maxYear != null) cards = cards.filter((c) => (c.year ?? Infinity) <= maxYear);
     const deals = new Map(cards.map((c) => [c.source + ':' + c.id, computeDeal(c)]));

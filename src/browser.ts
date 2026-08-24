@@ -292,10 +292,16 @@ async function navigate(page: Page, url: string): Promise<string> {
     await page.waitForTimeout(2500);
     lastHtml = await page.content();
     if (!isBlocked(lastHtml)) return lastHtml;
-    // Blocked: try the FOSS CAPTCHA solver, then retry.
+    // Blocked: try the FOSS CAPTCHA solver, then re-navigate to fetch the real page.
     if (CAPTCHA_SOLVER === 'buster') {
       const solved = await solveCaptchaIfPresent(page);
       if (solved) {
+        try {
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        } catch {
+          // challenge may have already redirected; fall through to content check
+        }
+        await page.waitForTimeout(2500);
         lastHtml = await page.content();
         if (!isBlocked(lastHtml)) return lastHtml;
       }
