@@ -204,6 +204,7 @@ async function saveCookiesToFile(context: BrowserContext): Promise<void> {
     const cookies = await context.cookies();
     fs.mkdirSync(path.dirname(COOKIE_FILE), { recursive: true });
     fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2));
+    fs.chmodSync(COOKIE_FILE, 0o600); // cookies are sensitive — restrict access
   } catch {
     // best-effort persistence
   }
@@ -221,6 +222,7 @@ export async function setAuthCookies(cookies: any[]): Promise<void> {
   if (!Array.isArray(cookies)) throw new Error('cookies must be an array');
   fs.mkdirSync(path.dirname(COOKIE_FILE), { recursive: true });
   fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2));
+  fs.chmodSync(COOKIE_FILE, 0o600); // cookies are sensitive — restrict access
 }
 
 export function authCookieFile(): string {
@@ -270,6 +272,7 @@ export interface ListingCard {
   id: string;
   url: string;
   title: string;
+  source: string;
   year: number | null;
   price: number | null;
   priceExGovt: number | null;
@@ -423,6 +426,7 @@ export function parseListings(html: string): ListingCard[] {
       id,
       url: base.url || 'https://www.carsales.com.au' + href,
       title,
+      source: 'carsales',
       year: base.year ?? (yearMatch ? Number(yearMatch[1]) : null),
       price: base.price ?? htmlMeta.price ?? null,
       priceExGovt: base.priceExGovt ?? htmlMeta.priceExGovt ?? null,

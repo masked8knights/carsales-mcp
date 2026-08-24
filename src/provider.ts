@@ -57,6 +57,7 @@ function normalizeCarapis(c: any): ListingCard {
       c.url ||
       (id ? 'https://www.carsales.com.au/cars/details/' + id + '/' : 'https://www.carsales.com.au/'),
     title: [year, make, model].filter(Boolean).join(' '),
+    source: 'carsales',
     year,
     price: c.price ?? null,
     priceExGovt: c.price_ex_govt ?? null,

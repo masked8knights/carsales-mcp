@@ -66,6 +66,21 @@ Listings flagged `GREAT`/`GOOD` are marked `[GREAT DEAL]` / `[GOOD DEAL]` in the
 with a short `why:` explanation, so the AI can proactively surface bargains. The raw
 `{ score, label, isGoodDeal, reason }` is also returned in each listing's `metadata`.
 
+## Facebook Marketplace + combined search
+
+- **`search_facebook_cars`** — native Facebook Marketplace car search, hardened
+  through the **same browser/proxy/engine** stack as carsales (Camoufox + proxy +
+  retries). Best-effort: Facebook may block requests from some IPs. Params: `query`,
+  `location` (city, default `sydney`), `minPrice`, `maxPrice`, `limit`.
+- **`search_all_cars`** — the one-shot "find me a car" tool: searches **both**
+  carsales **and** Facebook Marketplace, returns combined results tagged by source
+  (`[carsales]` / `[facebook]`), filtered, good-deal-sorted, with a deal summary.
+  Params mirror `search_cars` plus `location` (for Facebook) and `goodDealsOnly`.
+
+> `secondhand-mcp` (optional dependency) remains available for **eBay / Depop /
+> Poshmark** and other non-car marketplaces, avoiding overlap with the native
+> Facebook + carsales car search above.
+
 ## Login & authenticated actions
 
 Some carsales actions require an account. Because this server runs headless, you log in by
@@ -91,15 +106,38 @@ found or you're not logged in.
 
 ## Companion: secondhand-mcp (optional)
 
-If you also shop on eBay / Facebook Marketplace / Depop, `secondhand-mcp` is an optional
-companion that follows the same MCP tool contract. Install it alongside this server:
+`secondhand-mcp` is an **optional** companion for *non-car* marketplaces (eBay, Depop,
+Poshmark). **To avoid duplicating Facebook results** with this server's native
+`search_facebook_cars` / `search_all_cars`, run secondhand-mcp with Facebook **excluded**:
+
+```json
+"env": { "MARKETPLACES": "ebay,depop,poshmark" }
+```
+
+This server is the single source of truth for **cars** (carsales + native Facebook);
+secondhand-mcp covers everything else. (Note: `search_all_cars` never calls secondhand-mcp,
+so there is no overlap from this server's side — overlap would only occur if you also ask
+secondhand-mcp to search Facebook.)
 
 ```bash
 npm install secondhand-mcp   # optional; also declared as an optionalDependency
 ```
 
-Then register both in your MCP client so the assistant can search carsales *and* secondhand
-marketplaces through one interface.
+## Bundled skills
+
+This repo ships two [Agent Skills](https://github.com/agentskills/agentskills) (in
+`skills/`, symlinked into `.opencode/skills/` for auto-discovery). They are
+token-aware — a lean `SKILL.md` loads chapter files on demand.
+
+- **`car-inspection`** — assess a listing's **photos** for damage, rust, accident
+  signs, and VIN/odometer mismatches. Pairs with `get_listing_details(includeImages:true)`.
+  Built from Vehicle Damage Assessor standards.
+- **`buyers-guide`** — beginner's guide to **buying a used car in Australia**
+  (budgeting, dealer vs private vs auction, inspections, finance/running costs,
+  PPSR/write-off/rego, rights & scams). Distilled via `book-to-skill` from
+  ASIC/Moneysmart, ACCC, NSW Government and PPSR.
+
+See `skills/README.md` for triggers and how to enable them elsewhere.
 
 ## Setup
 

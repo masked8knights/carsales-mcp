@@ -4,3 +4,4 @@ dist/
 .DS_Store
 chrome-libs/
 proxy.js
+.opencode/
