@@ -6,11 +6,10 @@
  * they inherit the browser's TLS fingerprint and any configured proxy.
  *
  * doc_id values are Facebook frontend constants and may need updating if
- * Facebook changes its web app — hence the try/catch + clear error.
+ * Facebook changes its web app, hence the try/catch + clear error.
  */
 
-import { getPage } from './browser.js';
-import { ListingCard } from './browser.js';
+import { getPage, num, ListingCard } from './browser.js';
 
 const GRAPHQL_URL = 'https://www.facebook.com/api/graphql/';
 const LOCATION_DOC_ID = '5585904654783609';
@@ -24,12 +23,6 @@ export interface FacebookSearchParams {
   maxPrice?: number;
   limit?: number;
   radius?: number;
-}
-
-function num(s: string | null | undefined): number | null {
-  if (!s) return null;
-  const m = s.replace(/[^0-9]/g, '');
-  return m ? Number(m) : null;
 }
 
 async function fbRequest(docId: string, variables: string, retry: number): Promise<any> {

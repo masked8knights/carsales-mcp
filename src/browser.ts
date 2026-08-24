@@ -8,7 +8,7 @@ export type { Page };
 export type { Browser, BrowserContext };
 
 // Engine selection. The default is the Camoufox browser built by jo-inc
-// (https://github.com/jo-inc/camofox-browser) — the hardest-to-fingerprint
+// (https://github.com/jo-inc/camofox-browser), the hardest-to-fingerprint
 // option. If it fails to launch we fall back to the camoufox-js packaged
 // stable build, and finally to a hardened Chromium. Set CARS_ENGINE to pin a
 // tier: 'joinc' (default) | 'camoufox' | 'chromium'.
@@ -48,11 +48,11 @@ const MAX_RETRIES = Number(process.env.CARS_RETRIES || 3);
 const BACKOFF = Number(process.env.CARS_BACKOFF || 2000);
 
 // Optional FOSS CAPTCHA help. The only free, open-source solver we wire in is
-// Buster (https://github.com/dessant/buster, MIT) — it solves hCaptcha/reCAPTCHA
+// Buster (https://github.com/dessant/buster, MIT) solves hCaptcha/reCAPTCHA
 // *audio* challenges locally via the browser's Web Speech API (no paid service).
 // It loads as a Chromium extension, so it only applies when ENGINE=chromium and
 // the user points CARS_BUSTER_EXTENSION at their installed copy. It does NOT
-// defeat behavioural bot-protection like DataDome (carsales' own stack) — that
+// defeat behavioural bot-protection like DataDome (carsales' own stack). That
 // relies on avoidance (residential IP + Camoufox + proxy). Default: off.
 const CAPTCHA_SOLVER = (process.env.CARS_CAPTCHA_SOLVER || 'none').toLowerCase();
 const BUSTER_EXT = process.env.CARS_BUSTER_EXTENSION || '';
@@ -221,7 +221,7 @@ async function saveCookiesToFile(context: BrowserContext): Promise<void> {
     const cookies = await context.cookies();
     fs.mkdirSync(path.dirname(COOKIE_FILE), { recursive: true });
     fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2));
-    fs.chmodSync(COOKIE_FILE, 0o600); // cookies are sensitive — restrict access
+    fs.chmodSync(COOKIE_FILE, 0o600); // cookies are sensitive, restrict access
   } catch {
     // best-effort persistence
   }
@@ -239,7 +239,7 @@ export async function setAuthCookies(cookies: any[]): Promise<void> {
   if (!Array.isArray(cookies)) throw new Error('cookies must be an array');
   fs.mkdirSync(path.dirname(COOKIE_FILE), { recursive: true });
   fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2));
-  fs.chmodSync(COOKIE_FILE, 0o600); // cookies are sensitive — restrict access
+  fs.chmodSync(COOKIE_FILE, 0o600); // cookies are sensitive, restrict access
 }
 
 export function authCookieFile(): string {
@@ -261,7 +261,7 @@ export async function solveCaptchaIfPresent(page: Page): Promise<boolean> {
   const frameSel = 'iframe[src*="hcaptcha"], iframe[src*="recaptcha"], iframe[title*="captcha" i]';
   try {
     if ((await page.locator(frameSel).count()) === 0) return false;
-    console.error('[carsales-mcp] CAPTCHA widget detected — Buster attempting to solve...');
+    console.error('[carsales-mcp] CAPTCHA widget detected, Buster attempting to solve...');
     await page
       .waitForFunction(
         (sel: string) => {
@@ -347,7 +347,7 @@ export interface ListingCard {
   image: string | null;
 }
 
-function num(s: string | null): number | null {
+export function num(s: string | null | undefined): number | null {
   if (!s) return null;
   const m = s.replace(/[^0-9]/g, '');
   return m ? Number(m) : null;

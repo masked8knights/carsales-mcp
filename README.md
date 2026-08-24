@@ -1,247 +1,152 @@
 # carsales-mcp
 
 An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant search
-**carsales.com.au** — Australia's largest car marketplace — for used and new cars.
+**carsales.com.au**, Australia's largest car marketplace, for used and new cars.
 
-Built for Claude Desktop, Claude Code, Cursor, **opencode**, and any MCP-compatible client
-(we use it inside opencode).
+Built for Claude Desktop, Claude Code, Cursor, **opencode**, and any MCP-compatible client.
+We use it inside opencode.
 
 > [!NOTE]
-> carsales.com.au is protected by DataDome bot protection. This server drives a real
-> Chromium browser (not a plain HTTP client) to pass the challenge. Search results work
-> reliably. The full per-listing **detail page** may be blocked from some networks / datacenter
-> IPs — when that happens the server gracefully falls back to the rich summary card data it
-> already extracted from search (price, year, odometer, transmission, fuel, body, location).
-> On a normal residential connection the detail page usually loads fine.
+> carsales.com.au is protected by DataDome bot protection. This server drives a real browser
+> (not a plain HTTP client) to pass the challenge. Search results work reliably. The full
+> per-listing detail page may be blocked from some networks or datacenter IPs, in which case the
+> server falls back to the rich summary card data it already extracted from search (price, year,
+> odometer, transmission, fuel, body, location). On a normal residential connection the detail
+> page usually loads fine.
 
 > [!WARNING]
-> **USE AT YOUR OWN RISK — ACCOUNT BANS, IP BANS & PHONE-NUMBER BANS ARE POSSIBLE.**
-> Authenticated actions (`save_vehicle`, `make_offer`) log into carsales.com.au **as your real
-> account** by replaying cookies you exported from your browser. carsales' terms of service
-> prohibit automated access, and automated login / scripting can get your account **suspended or
-> permanently banned**, your **IP address blocked**, and — because a phone number is often required
-> to create/verify an account — a **phone number flagged or burned** with no recourse. This risk is
-> **yours**, not the tool's. In practice:
-> - Prefer doing saved-search / contact actions **manually in your browser**; use these tools only
+> **USE AT YOUR OWN RISK. ACCOUNT BANS, IP BANS AND PHONE-NUMBER BANS ARE POSSIBLE.**
+> Authenticated actions (save_vehicle, make_offer) log into carsales.com.au as your real account
+> by replaying cookies you exported from your browser. carsales' terms of service prohibit
+> automated access, and automated login or scripting can get your account suspended or permanently
+> banned, your IP address blocked, and (because a phone number is often required to create or
+> verify an account) a phone number flagged or burned, with no recourse. This risk is yours, not
+> the tool's. In practice:
+> - Prefer doing saved-search and contact actions manually in your browser. Use these tools only
 >   when you accept the risk.
-> - **Don't burn a primary account.** A throwaway/secondary account is strongly recommended.
-> - Creating fresh accounts purely to automate **may still be banned**, and **phone-number
->   verification is often required and can itself be blocked/flagged** — so a throwaway number may
->   not save you. Assume any account used for automation can be lost.
-> - These tools contact **real people about real money**. Always keep a human in the loop (the
->   built-in `confirm: true` gate) and verify listings independently (PPSR, rego, VIN, inspection)
->   before committing. The same-offer-twice guard also refuses to re-message a seller.
-> - Solving CAPTCHAs may breach a site's terms of service (opt-in `CARS_CAPTCHA_SOLVER`; your call).
+> - Do not burn a primary account. A throwaway or secondary account is strongly recommended.
+> - Creating fresh accounts purely to automate may still be banned, and phone-number verification
+>   is often required and can itself be blocked or flagged, so a throwaway number may not save you.
+>   Assume any account used for automation can be lost.
+> - These tools contact real people about real money. Always keep a human in the loop (the built-in
+>   confirm flag) and verify listings independently (PPSR, rego, VIN, inspection) before committing.
+>   The same-offer-twice guard also refuses to re-message a seller.
+> - Solving CAPTCHAs may breach a site's terms of service. The solver is opt-in (CARS_CAPTCHA_SOLVER)
+>   and is your responsibility.
 
 ## Tools
 
 ### `search_cars`
-Search for cars. Filters are applied as carsales URL facets where supported, and price /
-year / odometer are filtered in-memory from the listing cards (these have no simple URL param).
-
-| Param | Type | Notes |
-|-------|------|-------|
-| `make` | string (req) | e.g. `Toyota`, `Mazda`, `Tesla` |
-| `model` | string | e.g. `Camry`, `CX-5` |
-| `state` | string | `NSW`, `VIC`, `QLD`, `SA`, `TAS`, `WA`, `ACT`, `NT` |
-| `bodyStyle` | string | `sedan`, `wagon`, `suv`, `hatch`, `ute`, `coupe`, `van`, `convertible` |
-| `transmission` | string | `automatic`, `manual` |
-| `fuelType` | string | `petrol`, `diesel`, `hybrid`, `electric`, `plug-in hybrid`, `lpg` |
-| `condition` | enum | `used`, `new`, `private`, `dealer` |
-| `badge` | string | trim/badge, e.g. `GT`, `Ascent` |
-| `colour` | string | exterior colour, e.g. `white`, `black` |
-| `keyword` | string | free-text search |
-| `minPrice` / `maxPrice` | number | AUD |
-| `minYear` / `maxYear` | number | build year |
-| `maxOdometer` | number | km |
-| `postcode` | string | restrict to a postcode (carsales location facet) |
-| `radius` | number | search radius in km around the postcode (carsales distance facet) |
-| `sort` | enum | `price_low`, `price_high`, `year_new`, `year_old`, `km_low` |
-| `goodDealsOnly` | bool | only return listings flagged GOOD/GREAT deals (badge + price/year/odometer) |
-| `page` | number | results page (1-based) |
-| `limit` | number | max results to return (default 25) |
+Search carsales with make, model, state, body style, transmission, fuel, condition, badge, colour,
+keyword, price/year/odometer ranges, postcode plus radius, sort, and a good-deals-only filter.
+Price, year and odometer are filtered in-memory from the listing cards.
 
 ### `get_listing_details`
-Get full details for one listing by `listingId` (e.g. `OAG-AD-26099426`) or full `url`.
-Falls back to summary card data if the detail page is bot-blocked.
+Get full details for one listing by listingId (e.g. `OAG-AD-26099426`) or full URL. Works for
+carsales, Facebook and Gumtree URLs. Falls back to summary card data if the detail page is
+bot-blocked. Set `includeImages: true` to download photos as image blocks so a multimodal model
+can see the car. Note: images are token-heavy, so enable them only when needed.
 
-**Holistic view.** The tools surface the full listing picture for the model:
-- `get_listing_details` / `fetch` return the price (drive-away **and** ex-govt-charges), price
-  indicator (FAIR/GOOD/GOOD/ GREAT PRICE), year, odometer, transmission, fuel, body, engine,
-  seller + state, the **feature/spec bullet list**, the description, and the **photo gallery**.
-- Set `includeImages: true` (default for `get_listing_details`/`fetch`) and the actual photos are
-  downloaded and returned as MCP **image blocks**, so a multimodal model can literally *see* the
-  car. `search` has `includeImages` too (off by default) to attach each result's thumbnail.
-- `search` returns each result's `image` URL in its JSON even when images aren't embedded.
+### `search_facebook_cars` / `search_gumtree_cars` / `search_all_cars`
+Native Facebook Marketplace and Gumtree car search, hardened through the same browser, proxy and
+engine stack as carsales. `search_all_cars` is the one-shot finder: it searches all three sources,
+de-duplicates cross-source results, tags each by source, sorts by deal quality, and supports
+`location`, `radius`, `goodDealsOnly` and `cluster` (a by-area summary).
 
-## Good deals (proactive bargain flagging)
+### `price_insight`
+Free valuation. Builds a fair-price band (median plus 25th and 75th percentile) from free comparable
+carsales listings for the same make, model and year, and adds a free cross-market band from Gumtree
+and Facebook. The paid alternative is RedBook or CarHistory, which we do not use.
 
-Every tool attaches a `deal` assessment to each listing, and `search_cars` can filter to
-bargains with `goodDealsOnly: true`. The score combines:
+### `compare_listings`
+Side-by-side comparison of 2 or 3 listings (full details pulled for each).
 
-- **carsales' own price badge** (FAIR / GOOD / GREAT / BAD PRICE) — the primary,
-  market-data-backed signal.
-- **Odometer-for-age** — low km/yr nudges the score up; very high km/yr down.
-- **Price-per-year** — an unusually low $/year nudges up; very high nudges down.
+### `export_csv`
+Dump a carsales search to CSV with no external service.
 
-Listings flagged `GREAT`/`GOOD` are marked `[GREAT DEAL]` / `[GOOD DEAL]` in the text output
-with a short `why:` explanation, so the AI can proactively surface bargains. The raw
-`{ score, label, isGoodDeal, reason }` is also returned in each listing's `metadata`.
+### Watch alerts (free, no paid service)
+- `watch_search` saves a query across sources (carsales, gumtree, facebook). `check_watch` re-runs it
+  and reports listings new since the last check. `list_watches` and `remove_watch` manage them.
+- `watch_listing` watches a single listing for a price drop. `check_watch` on it reports any price
+  change versus the last check.
+- Optional: set `CARS_WATCH_WEBHOOK` to POST new listings to a free ntfy, Discord or Slack webhook.
 
-## Facebook Marketplace + combined search
+### `check_vehicle`
+Free vehicle trust check. Points at the official state-transport registration check (registration
+validity and written-off status) and attempts a best-effort automated lookup. Encumbrance (finance
+owed) lives only on the paid PPSR and is intentionally out of scope. The manual URL is always
+returned for human verification.
 
-- **`search_facebook_cars`** — native Facebook Marketplace car search, hardened
-  through the **same browser/proxy/engine** stack as carsales (Camoufox + proxy +
-  retries). Best-effort: Facebook may block requests from some IPs. Params: `query`,
-  `location` (city, default `sydney`), `minPrice`, `maxPrice`, `limit`.
-- **`search_all_cars`** — the one-shot "find me a car" tool: searches **carsales**,
-  **Facebook Marketplace** and **Gumtree**, returns combined, de-duplicated results tagged by
-  source (`[carsales]` / `[facebook]` / `[gumtree]`), filtered, good-deal-sorted, with a deal
-  summary. Params mirror `search_cars` plus `location` (for Facebook/Gumtree), `radius` (search
-  radius in km) and `goodDealsOnly`. Set `cluster: true` to append a **by-area** grouping.
+### `dealer_info`
+Reputation check. Scrapes a carsales dealer star rating and review count (best-effort). Facebook and
+Gumtree are mostly private sellers with no dealer rating, so it flags that and reminds you to verify
+the individual listing. Check before contacting anyone.
 
-> Everything here is **100% FOSS** — no paid API keys (Carapis/RedBook/PPSR) are required for
-> any feature. Paid equivalents are noted only where they’d add data we deliberately don’t pay for.
+### Good deals
+Every tool attaches a deal assessment to each listing, and `search_cars` can filter to bargains with
+`goodDealsOnly: true`. The score combines carsales' own price badge (the primary market-data signal),
+odometer-for-age and price-per-year. Listings flagged GREAT or GOOD are marked in the text output
+with a short reason.
 
-## More free sources & tools
+### Login and authenticated actions
+Some actions need an account: `save_vehicle` (watchlist), `make_offer` (contact seller). Read the
+warning at the top before using them. You log in by importing cookies from your own browser (never
+your password). See `set_auth` and `auth_status`.
 
-- **`search_gumtree_cars`** — native Gumtree.com.au car search (HTML-scraped through the same
-  hardened browser stack; best-effort, like the rest). Adds a third free marketplace to cover.
-  `radius` (km) is accepted best-effort.
-- **`price_insight`** — free valuation. Builds a fair-price band (median + 25th/75th percentile)
-  from **free comparable carsales listings** for the same make/model/year. The paid alternative is
-  RedBook/CarHistory; we approximate it for $0 and never call a paid endpoint.
-- **`compare_listings`** — side-by-side comparison of 2–3 listings (pulls full details for each).
-- **`export_csv`** — dump a carsales search to CSV (spreadsheet-friendly) with no external service.
-- **Saved-search alerts (FOSS, no paid service):** `watch_search` saves a search; `list_watches`
-  lists them; `check_watch` re-runs it and reports listings **new since the last check** (local
-  ID-diff). `remove_watch` deletes one. Great for "tell me when a cheap Corolla appears".
-- **`check_vehicle`** — free vehicle trust check. Points at the official **state-transport
-  registration check** (registration validity + written-off status) and attempts a best-effort
-  automated lookup. **Encumbrance (finance owed) lives only on the paid PPSR** and is intentionally
-  out of scope — the tool always returns the official manual URL so a human can verify. Government
-  rego pages are often CAPTCHA / datacenter-blocked, so the automated lookup may return nothing; in
-  that case verify manually at the URL provided.
-- **`get_listing_details` / `compare_listings`** work for **all three sites** (carsales, Facebook,
-  Gumtree) — non-carsales URLs are scraped generically and return multiple photos, so the AI can
-  actually *see* the car on every source.
-- **`dealer_info`** — reputation check. Scrapes a carsales **dealer** star rating + review count
-  (best-effort). Facebook/Gumtree are mostly private sellers with no dealer rating, so it just
-  flags that and reminds you to verify the individual listing. Check before contacting anyone.
-- **Radius:** `search_facebook_cars` honours `radius` (km) around the location; `search_gumtree_cars`
-  accepts it best-effort. `search_cars` supports `postcode` + `radius` (carsales facet).
-- **`watch_listing`** — watch a **single** listing for a **price drop** (FOSS alerts). `check_watch`
-  on it reports a drop (or any price change) vs the last check. Pairs with `watch_search` (new
-  listings) for full coverage.
+How to export your carsales cookies:
+1. Log into carsales.com.au in your normal browser (Chrome, Edge or Firefox).
+2. Open DevTools (F12), Application tab, Cookies, then `https://www.carsales.com.au`.
+3. Copy all rows (or use an extension like Cookie-Editor, Export to JSON). You need the array of
+   cookie objects: `[{ "name": "...", "value": "...", "domain": "...", ... }, ...]`.
+4. Paste that array as the `cookies` argument to `set_auth`, or save it to `CARS_COOKIE_FILE`.
+5. Call `auth_status` to confirm. If it says it could not confirm login, the account page is likely
+   bot-blocked from this network, so log in again in the browser and re-export.
 
-> `secondhand-mcp` (optional dependency) remains available for **eBay / Depop /
-> Poshmark** and other non-car marketplaces, avoiding overlap with the native
-> Facebook + carsales car search above.
+We deliberately do not support typing your password into the bot or automating the login form. Cookie
+import is the only path, so your password never touches this server.
 
-## Login & authenticated actions
+### Offer safety (enforced, not optional)
+`make_offer` will never send the same offer twice. Before any send it checks a persistent, append-only
+log (`CARS_OFFERS_FILE`) and refuses if an identical offer (same listing, message and price) was
+already sent, or if any offer was sent to the same listing within `CARS_OFFER_COOLDOWN_HOURS` (default
+24). This guard cannot be disabled. The message you supply is sent verbatim (the AI never rewrites
+it), and sends are paced with a short random delay.
 
-> [!WARNING]
-> **Account / IP / phone-number bans are possible.** Read the full warning at the **top of this
-> README** before using any authenticated action. TL;DR: use a throwaway account, keep a human in
-> the loop (`confirm: true`), and accept that automation can get you banned with no recourse.
+## Optional companion: secondhand-mcp
+`secondhand-mcp` covers non-car marketplaces (eBay, Depop, Poshmark). To avoid duplicating Facebook
+results with this server's native `search_facebook_cars` / `search_all_cars`, run it with Facebook
+excluded: `MARKETPLACES=ebay,depop,poshmark`. This server is the single source of truth for cars
+(carsales plus native Facebook and Gumtree); secondhand-mcp covers everything else. `search_all_cars`
+never calls secondhand-mcp, so there is no overlap from this side.
 
-Some carsales actions require an account. Because this server runs headless, you log in by
-importing cookies from your own browser (not by typing credentials into the bot):
-
-```json
-"env": { "CARS_COOKIE_FILE": "/path/to/carsales-cookies.json" }
-```
-
-Then call **`set_auth`** with the cookies array (DevTools → Application → Cookies, or a cookie
-export extension). The session is persisted to `CARS_COOKIE_FILE` and reused on every request.
-
-**How to export your carsales cookies** (the part people get stuck on):
-1. Log into **carsales.com.au** in your normal browser (desktop Chrome/Edge/Firefox).
-2. Open DevTools (F12) → **Application** tab → **Cookies** → `https://www.carsales.com.au`.
-3. Select all rows and copy them (or use an extension like *Cookie-Editor* → **Export** → JSON).
-   You need the **array** of cookie objects: `[{ "name": "...", "value": "...", "domain": "...", ... }, ...]`.
-4. Paste that array as the `cookies` argument to **`set_auth`** (or save it to `CARS_COOKIE_FILE`).
-5. Call **`auth_status`** to confirm it worked. If it says "could not confirm login", the account
-   page is likely bot-blocked from this network — log in again in the browser and re-export.
-
-> We deliberately do **not** support typing your password into the bot or automating the login
-> form — cookie import is the only path, so your password never touches this server.
-Verify with **`auth_status`**.
-
-Once authenticated you can:
-
-- **`save_vehicle`** — add a listing to your watchlist/saved cars.
-- **`make_offer`** — open the seller contact/enquire form and submit a message (and optional
-  offer price).
-
-Both are *best-effort* (they click the relevant control on the live page); selector changes on
-carsales may require tweaks. They fail gracefully with a clear message if the control isn't
-found or you're not logged in.
-
-## Companion: secondhand-mcp (optional)
-
-`secondhand-mcp` is an **optional** companion for *non-car* marketplaces (eBay, Depop,
-Poshmark). **To avoid duplicating Facebook results** with this server's native
-`search_facebook_cars` / `search_all_cars`, run secondhand-mcp with Facebook **excluded**:
-
-```json
-"env": { "MARKETPLACES": "ebay,depop,poshmark" }
-```
-
-This server is the single source of truth for **cars** (carsales + native Facebook);
-secondhand-mcp covers everything else. (Note: `search_all_cars` never calls secondhand-mcp,
-so there is no overlap from this server's side — overlap would only occur if you also ask
-secondhand-mcp to search Facebook.)
-
-```bash
-npm install secondhand-mcp   # optional; also declared as an optionalDependency
-```
-
-## Bundled skills
-
-This repo ships two [Agent Skills](https://github.com/agentskills/agentskills) (in
-`skills/`, symlinked into `.opencode/skills/` for auto-discovery). They are
-token-aware — a lean `SKILL.md` loads chapter files on demand.
-
-- **`car-inspection`** — assess a listing's **photos** for damage, rust, accident
-  signs, and VIN/odometer mismatches. Pairs with `get_listing_details(includeImages:true)`.
-  Built from Vehicle Damage Assessor standards.
-- **`buyers-guide`** — beginner's guide to **buying a used car in Australia**
-  (budgeting, dealer vs private vs auction, inspections, finance/running costs,
-  PPSR/write-off/rego, rights & scams). Distilled via `book-to-skill` from
-  ASIC/Moneysmart, ACCC, NSW Government and PPSR.
-
-See `skills/README.md` for triggers and how to enable them elsewhere.
+## Bundled skills (token-aware)
+This repo ships two Agent Skills in `skills/`, symlinked into `.opencode/skills/` for auto-discovery.
+Each has a lean `SKILL.md` that loads chapter files on demand, keeping context small.
+- `car-inspection`: assess a listing's photos for damage, rust, accident signs and VIN or odometer
+  mismatches. Pairs with `get_listing_details(includeImages: true)`.
+- `buyers-guide`: beginner's guide to buying a used car in Australia (budgeting, dealer vs private,
+  inspections, finance and running costs, PPSR, write-off and rego, rights and scams).
 
 ## Setup
 
-### 1. Install Playwright's browser
+### 1. Install
+The default engine is Camoufox (a Firefox-based anti-detect browser). Its binary downloads
+automatically on first launch, so for the default setup you only need:
 
 ```bash
-npm install -g carsales-mcp      # OR clone + npm install
-npx playwright install chromium   # downloads the full Chromium build (needed!)
+npm install -g carsales-mcp
+# then run via your MCP client, e.g. npx -y carsales-mcp
 ```
 
-> The full Chromium build (`channel: 'chromium'`) is required — the headless *shell* is
-> fingerprinted and blocked by DataDome. On Linux you may also need system libraries:
-> `npx playwright install-deps chromium` (or your distro's equivalents of `libnss3`, `libnspr4`, `libasound2`).
+Camoufox needs some system libraries on Linux. If launch fails, install them once:
+`npx playwright install-deps chromium` (or your distro's equivalents of libnss3, libnspr4, libasound2).
+
+You only need the full Chromium build (`npx playwright install chromium`) if you switch the engine
+with `CARS_ENGINE=chromium` (for example to use the optional Buster CAPTCHA solver).
 
 ### 2. Add to your MCP client
-
-**Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "carsales": {
-      "command": "npx",
-      "args": ["-y", "carsales-mcp"]
-    }
-  }
-}
-```
-
-**Claude Code** — `~/.claude/.mcp.json`:
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`), **Claude
+Code** (`~/.claude/.mcp.json`), or **opencode** (`opencode.jsonc` / `~/.config/opencode/opencode.jsonc`):
 
 ```json
 {
@@ -254,124 +159,71 @@ npx playwright install chromium   # downloads the full Chromium build (needed!)
 }
 ```
 
-**opencode** — add to your `opencode.jsonc` (or `~/.config/opencode/opencode.jsonc`):
+### 3. Optional tuning
+carsales.com.au is behind DataDome. The server survives this with a 3-tier engine fallback:
+1. `joinc` (default): the Camoufox build from jo-inc, the hardest-to-fingerprint option.
+2. `camoufox`: the camoufox-js packaged stable build.
+3. `chromium`: a hardened Chromium with automation flags stripped and `--no-sandbox`.
 
-```jsonc
-{
-  "mcpServers": {
-    "carsales": {
-      "command": "npx",
-      "args": ["-y", "carsales-mcp"]
-    }
-  }
-}
-```
+If a tier fails to launch, the server drops to the next one, always ending at Chromium. Force a tier
+with `CARS_ENGINE=joinc|camoufox|chromium`, or point Camoufox at a specific binary with
+`CARS_CAMOUFOX_BINARY=/path/to/camoufox`.
 
-### 3. (Optional) Proxy / anti-bot tuning
+The browser's User-Agent matches its engine (Firefox UA on Camoufox, Chrome UA on Chromium). This is a
+fingerprint fix, because a mismatched UA is a classic bot tell. `navigator.webdriver` is stripped and
+locale or timezone is set to `en-AU` / `Australia/Sydney`.
 
-carsales.com.au is behind DataDome. The server is built to survive this:
+If you have a Carapis API key, set `CARAPIS_API_KEY` and `search_cars` will pull clean structured JSON
+from their carsales endpoint instead of scraping. If the key is absent or the call fails, it falls
+back to the browser. This is the official-API-where-possible, scrape-where-not strategy.
 
-**Camoufox (jo-inc) is the default engine.** Camoufox is a Firefox-based anti-detect
-browser — originally built by jo-inc (`https://github.com/jo-inc/camofox-browser`) — with a
-much harder-to-fingerprint profile than Chromium. The browser binary is downloaded
-automatically on first launch (`npx camoufox-js fetch`), and the server uses a **3-tier
-fallback chain**:
-
-1. **`joinc`** (default) — the Camoufox build from jo-inc (the hardest-to-fingerprint option).
-2. **`camoufox`** — the camoufox-js packaged stable build.
-3. **`chromium`** — a hardened Chromium (automation flags stripped, `--no-sandbox`).
-
-If a tier fails to launch (e.g. missing system libs), the server transparently drops to the
-next tier, always ending at Chromium. Force a tier with `CARS_ENGINE=joinc|camoufox|chromium`,
-and point Camoufox at a specific binary (e.g. a build you fetched yourself from the jo-inc
-releases) with `CARS_CAMOUFOX_BINARY=/path/to/camoufox`.
-
-**API + scraping balance (mirrors secondhand-mcp).** If you have a
-[Carapis](https://www.carapis.com) API key, set `CARAPIS_API_KEY` and `search_cars` will pull
-clean structured JSON from their carsales.com.au endpoint (no bot challenges). If the key is
-absent or the call fails, it falls back to the browser scraper. This is the same
-official-API-where-possible / scrape-where-not strategy secondhand-mcp uses for eBay vs
-Depad/Poshmark.
-
-**Proxy.** DataDome blocks primarily by **IP reputation**, so a (residential) proxy is the most
-reliable fix. Set `CARS_PROXY` to a single proxy, or a **comma-separated list** to rotate across
-proxies per request (combined with the retry logic below):
-
-```json
-"env": {
-  "CARS_PROXY": "http://user:pass@proxy1:8000,http://user:pass@proxy2:8000",
-  "CARAPIS_API_KEY": "your-key"
-}
-```
-
-Other tuning env vars:
+Proxy: DataDome blocks primarily by IP reputation, so a residential proxy is the most reliable fix.
+Set `CARS_PROXY` to a single proxy or a comma-separated list rotated per request.
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `CARS_ENGINE` | `joinc` | `joinc` (jo-inc Camoufox) → `camoufox` (stable) → `chromium` fallback |
-| `CARS_CAMOUFOX_BINARY` | – | path to a specific Camoufox binary (e.g. a self-fetched jo-inc build) |
-| `CARAPIS_API_KEY` | – | use Carapis REST API for search (no scraping) |
-| `CARS_PROXY` | – | single proxy or comma-separated rotation list |
-| `CARS_COOKIE_FILE` | `~/.carsales-mcp/cookies.json` | where the login session cookies are stored |
-| `CARS_WATCH_WEBHOOK` | – | optional: POST new `watch_search` listings here (ntfy/Discord/Slack) — free alerts, no paid service |
-| `CARS_CAPTCHA_SOLVER` | `none` | FOSS CAPTCHA help: `buster` (audio-challenge solver, Chromium only). Does NOT defeat DataDome |
-| `CARS_BUSTER_EXTENSION` | – | path to your installed Buster extension (when `CARS_CAPTCHA_SOLVER=buster`) |
-| `CARS_OFFER_COOLDOWN_HOURS` | `24` | `make_offer` refuses any re-contact to the same listing within this window |
-| `CARS_OFFERS_FILE` | `~/.carsales-mcp/sent-offers.json` | append-only log of sent offers (enforces "never send the same offer twice") |
-| `CARS_MIN_DELAY` | `1500` | min ms between navigations (be polite) |
-| `CARS_RETRIES` | `3` | retry attempts when a DataDome challenge is hit |
-| `CARS_BACKOFF` | `2000` | backoff ms between retries (doubles each try) |
+| `CARS_ENGINE` | `joinc` | Engine tier: `joinc` then `camoufox` then `chromium` |
+| `CARS_CAMOUFOX_BINARY` | – | Path to a specific Camoufox binary |
+| `CAMOUFOX_INSTALL_DIR` | `~/.cache/camoufox` | Where the Camoufox binary is stored |
+| `CARAPIS_API_KEY` | – | Use the Carapis REST API for search instead of scraping |
+| `CARS_PROXY` | – | Single proxy or comma-separated rotation list |
+| `CARS_COOKIE_FILE` | `~/.carsales-mcp/cookies.json` | Where login session cookies are stored |
+| `CARS_WATCH_FILE` | `~/.carsales-mcp/watches.json` | Where saved searches and listing watches are stored |
+| `CARS_WATCH_WEBHOOK` | – | POST new watch listings here (ntfy, Discord, Slack) for free alerts |
+| `CARS_CAPTCHA_SOLVER` | `none` | FOSS CAPTCHA help: `buster` (audio-challenge solver, Chromium only). Does not defeat DataDome |
+| `CARS_BUSTER_EXTENSION` | – | Path to your installed Buster extension when `CARS_CAPTCHA_SOLVER=buster` |
+| `CARS_OFFER_COOLDOWN_HOURS` | `24` | `make_offer` refuses re-contact to the same listing within this window |
+| `CARS_OFFERS_FILE` | `~/.carsales-mcp/sent-offers.json` | Append-only log that enforces never sending the same offer twice |
+| `CARS_MIN_DELAY` | `1500` | Minimum ms between navigations (be polite) |
+| `CARS_RETRIES` | `3` | Retry attempts when a DataDome challenge is hit |
+| `CARS_BACKOFF` | `2000` | Backoff ms between retries (doubles each try) |
+| `CARS_SELFTEST_DIR` | `~/.carsales-mcp/selftest` | Where `scripts/selftest.mjs` saves fixtures |
 
-```json
-"env": { "CARS_PROXY": "http://127.0.0.1:8899" }
-```
+## Anti-blocking: what we have and what we do not
+We have (all FOSS): the 3-tier engine fallback, a correct fingerprint (matching UA, stripped
+`navigator.webdriver`, en-AU locale and timezone), proxy rotation, politeness and retries, and
+graceful degradation (a blocked or 403 page returns fewer or zero results, never a crash).
 
-## Notes & limits
+We deliberately do not have a paid CAPTCHA solver. Solving DataDome via 2captcha or Anti-Captcha
+conflicts with the 100% FOSS goal. Our strategy is avoidance: a clean residential IP, Camoufox and a
+proxy. As an opt-in, we wire the FOSS Buster extension (`CARS_CAPTCHA_SOLVER=buster`, MIT-licensed,
+solves hCaptcha and reCAPTCHA audio challenges locally via the browser's speech recognition, no paid
+service). Caveats: it only works on the Chromium engine, it needs you to point `CARS_BUSTER_EXTENSION`
+at your installed copy, and it does not defeat behavioural bot-protection like DataDome. If a CAPTCHA
+appears and no solver is configured, the tool reports it and stops. Verify manually in your browser.
 
-- DataDome may occasionally challenge; if a search returns nothing, just retry.
+## Notes and limits
+- DataDome may occasionally challenge. If a search returns nothing, retry.
 - Respect carsales' terms of service and avoid hammering with very high page counts.
-- No official carsales API is used — this scrapes the public site via a real browser.
+- No official carsales API is used. This scrapes the public site via a real browser.
+- The server reuses one browser page and closes it on exit, so resource use stays low. Token use is
+  dominated by listing text and images. Keep `limit` modest and enable `includeImages` only when the
+  model needs to see the photos.
 
-## Anti-blocking (what we have, and what we don't)
-
-**We have (all FOSS):**
-- **3-tier engine fallback:** jo-inc Camoufox (hardest-to-fingerprint Firefox build) →
-  camoufox-js stable → hardened Chromium. `CARS_ENGINE` pins a tier.
-- **Correct fingerprint:** the browser's User-Agent matches its engine (Firefox UA on Camoufox,
-  Chrome UA on Chromium) — a mismatched UA is a classic bot tell we fixed.
-- `navigator.webdriver` is stripped; `locale`/`timezone` set to `en-AU` / `Australia/Sydney`.
-- **Proxy rotation:** `CARS_PROXY` (single or comma-separated list, rotated per request).
-- **Politeness + retries:** `CARS_MIN_DELAY` between navigations, `CARS_RETRIES` + `CARS_BACKOFF`
-  on a DataDome challenge.
-- Failing gracefully: a blocked/403 page degrades to fewer (or zero) results, never a crash.
-
-**We deliberately do NOT have a paid CAPTCHA solver.** Solving DataDome via 2captcha/Anti-Captcha
-conflicts with the 100% FOSS goal. Our primary strategy is *avoidance* — a clean residential IP +
-Camoufox + proxy. As an opt-in, we wire the **FOSS Buster extension** (`CARS_CAPTCHA_SOLVER=buster`,
-MIT-licensed, solves hCaptcha/reCAPTCHA *audio* challenges locally via the browser's speech
-recognition — no paid service). Caveats: it **only works on the Chromium engine** (Buster is a Chrome
-extension), it needs the user to point `CARS_BUSTER_EXTENSION` at their installed copy, and it **does
-not defeat behavioural bot-protection like DataDome** (carsales' own stack) — that still relies on
-avoidance. If a CAPTCHA appears and no solver is configured, the tool reports it and stops; verify
-manually in your browser.
-
-> Solving CAPTCHAs may breach a site's terms of service. This is opt-in and your responsibility.
-
-## Offer safety (enforced, not optional)
-
-`make_offer` will **never send the same offer twice**. Before any send it checks a persistent,
-append-only log (`CARS_OFFERS_FILE`) and refuses if: (1) an **identical** offer (same listing +
-same message + same price) was already sent, or (2) **any** offer was sent to the same listing
-within `CARS_OFFER_COOLDOWN_HOURS` (default 24). This guard is mandatory — there is no flag to
-disable it — and complements the human-in-the-loop `confirm` gate. The message you pass is always
-sent verbatim (the AI never rewrites it), and sends are paced with a short random delay.
-
-## Self-test / regression
-
-`node scripts/selftest.mjs` live-fetches carsales + Gumtree + Facebook, saves the raw HTML as a
-fixture, and asserts the parsers extract listings (so markup changes that silently break scraping
-are caught). Run `node scripts/selftest.mjs --offline` to re-parse saved fixtures without network.
+## Self-test
+`node scripts/selftest.mjs` live-fetches carsales, Gumtree and Facebook, saves the raw HTML as a
+fixture, and asserts the parsers extract listings. Run `node scripts/selftest.mjs --offline` to
+re-parse saved fixtures without network.
 
 ## License
-
 MIT

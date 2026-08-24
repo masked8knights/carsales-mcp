@@ -88,7 +88,7 @@ export function formatInsight(
         `  Listing price ${aud(targetPrice)} is ${word} median by ${aud(Math.abs(diff))} (${Math.abs(pct)}%).`,
       );
     } else {
-      lines.push(`  Listing price ${aud(targetPrice)} — no comparables to judge against.`);
+      lines.push(`  Listing price ${aud(targetPrice)}. No comparables to judge against.`);
     }
   }
   return lines.join('\n');

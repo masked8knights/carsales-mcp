@@ -1,5 +1,5 @@
 /**
- * Free vehicle trust check — 100% FOSS, NO paid API.
+ * Free vehicle trust check (100% FOSS, NO paid API.
  *
  * Paid competitors wrap the PPSR (Personal Property Securities Register) for
  * encumbrance / write-off reports. We deliberately do NOT use PPSR: it charges
@@ -9,7 +9,7 @@
  * human can verify independently.
  *
  * NOTE: government rego-check pages are often CAPTCHA / datacenter-blocked, so
- * the automated lookup may return nothing — in that case use the manual URL.
+ * the automated lookup may return nothing. In that case use the manual URL.
  * Encumbrance (finance owed) is ONLY on paid PPSR and is intentionally out of
  * scope for this FOSS tool.
  */

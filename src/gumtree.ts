@@ -3,14 +3,14 @@
  * browser / proxy / engine infrastructure as carsales (Camoufox + proxy + retries).
  *
  * Gumtree has no public JSON API, so we drive the real search page and parse the
- * listing cards out of the HTML — the same best-effort strategy used for carsales.
+ * listing cards out of the HTML. The same best-effort strategy used for carsales.
  * Markup changes on Gumtree may require selector tweaks; failures degrade to an
  * empty result rather than throwing, so the combined search still works.
  *
  * 100% FOSS: no paid API, no key. Best-effort only.
  */
 
-import { getPage, fetchSearchHtml, ListingCard } from './browser.js';
+import { getPage, fetchSearchHtml, num, ListingCard } from './browser.js';
 
 const SEARCH_BASE = 'https://www.gumtree.com.au/s-cars-vans-utes';
 
@@ -21,12 +21,6 @@ export interface GumtreeSearchParams {
   maxPrice?: number;
   limit?: number;
   radius?: number;
-}
-
-function num(s: string | null | undefined): number | null {
-  if (!s) return null;
-  const m = s.replace(/[^0-9]/g, '');
-  return m ? Number(m) : null;
 }
 
 function idFromGumtreeUrl(u: string): string | null {

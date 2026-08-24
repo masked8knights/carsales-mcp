@@ -2,7 +2,7 @@
  * "Good deal" scoring for carsales listings.
  *
  * The primary signal is carsales' own price badge (FAIR/GOOD/GREAT/BAD PRICE),
- * which is computed by carsales from real market data — the most reliable
+ * which is computed by carsales from real market data, the most reliable
  * indicator we have. We then add small, transparent adjustments from the
  * listing's own numbers (odometer-for-age, price-per-year) so the AI can
  * proactively flag bargains even when the badge is missing.

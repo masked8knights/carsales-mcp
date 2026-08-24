@@ -187,7 +187,7 @@ function cardSummary(c: ListingCard): string {
     c.odometer ? `${c.odometer.toLocaleString()} km` : null,
     c.seller,
   ].filter(Boolean);
-  return `${c.title} — ${price} | ${bits.join(' | ')}`;
+  return `${c.title} - ${price} | ${bits.join(' | ')}`;
 }
 
 async function describeListing(
@@ -219,8 +219,8 @@ async function describeListing(
     const d = parseDetails(html, id, target);
     const deal = computeDeal(d);
     const dealLine = deal.isGoodDeal
-      ? `Deal: ${deal.label.toUpperCase()} (score ${deal.score}) — ${deal.reason}`
-      : `Deal: ${deal.label} (score ${deal.score}) — ${deal.reason}`;
+      ? `Deal: ${deal.label.toUpperCase()} (score ${deal.score}): ${deal.reason}`
+      : `Deal: ${deal.label} (score ${deal.score}): ${deal.reason}`;
     const lines = [
       d.title,
       d.year ? `Year: ${d.year}` : null,
@@ -277,7 +277,7 @@ async function describeListing(
         `Full detail page is blocked by anti-bot protection from this network; ` +
         `showing summary card data:\n\n${card.title}\n` +
         `Price: $${(card.price ?? card.priceExGovt ?? 'n/a').toLocaleString()}\n` +
-        cardSummary(card).replace(card.title + ' — ', ''),
+        cardSummary(card).replace(card.title + ' - ', ''),
       url: card.url,
       metadata: {
         price: card.price,
@@ -343,7 +343,7 @@ function resolveListingTarget(listingId?: string, url?: string): string | null {
 
 function highRiskBanner(action: string, planned: string[]): string {
   return [
-    'WARNING — HIGH-RISK ACTION, HUMAN IN THE LOOP REQUIRED',
+    'WARNING: HIGH-RISK ACTION, HUMAN IN THE LOOP REQUIRED',
     '',
     action,
     ...planned,
@@ -351,10 +351,10 @@ function highRiskBanner(action: string, planned: string[]): string {
     'This contacts a REAL PERSON and may involve MONEY. Private sales carry little',
     'or no consumer protection. Independently verify the listing (PPSR, registration,',
     'VIN/odometer, pre-purchase inspection) before committing. Marketplace scams are',
-    'common — if a price looks too good to be true, it probably is.',
+    'common. If a price looks too good to be true, it probably is.',
     '',
     'ANTI-BOT / HUMAN-TONE: the message you supply is sent VERBATIM (the AI does not',
-    'write or rewrite it). Do NOT send the SAME message to many sellers — identical bulk',
+    'write or rewrite it). Do NOT send the SAME message to many sellers. Identical bulk',
     'messages are the #1 "bot" tell and can get your account flagged or banned. Personalize',
     'each message per listing. Messages are also paced with a short random delay before send.',
     '',
@@ -410,7 +410,7 @@ server.tool(
           type: 'text',
         text: loggedIn
           ? 'Logged in to carsales.com.au. Authenticated actions are available.'
-          : 'Could not confirm login — the account page may be blocked from this network, or you may be logged out. Use set_auth with cookies from your browser to enable saving/making offers.',
+          : 'Could not confirm login. The account page may be blocked from this network, or you may be logged out. Use set_auth with cookies from your browser to enable saving/making offers.',
         },
       ],
     };
@@ -483,8 +483,8 @@ server.tool(
           {
             type: 'text',
             text: clicked
-              ? `Clicked the Save control on ${target} (matched selector: ${hitSelector}; best-effort — confirm in your carsales account).`
-              : `Could not find a Save/Watchlist control on ${target}. Tried ${selectors.length} selectors — the page may require login or its markup changed.`,
+              ? `Clicked the Save control on ${target} (matched selector: ${hitSelector}; best-effort - confirm in your carsales account).`
+              : `Could not find a Save/Watchlist control on ${target}. Tried ${selectors.length} selectors - the page may require login or its markup changed.`,
           },
         ],
       };
@@ -499,7 +499,7 @@ server.tool(
   'Contact the seller / make an offer on a carsales listing (requires an authenticated ' +
     'session via set_auth). Best-effort: opens the contact/enquire form and submits your ' +
     'message. HIGH-RISK: contacts a real person and may involve money. Requires confirm: ' +
-    'true (human-in-the-loop) — the first call returns a warning and does nothing.',
+    'true (human-in-the-loop) - the first call returns a warning and does nothing.',
   {
     listingId: z.string().optional().describe('Listing id, e.g. OAG-AD-26099426'),
     url: z.string().optional().describe('Full carsales listing URL'),
@@ -592,7 +592,7 @@ server.tool(
           content: [
             {
               type: 'text',
-              text: `Could not find a Make-an-offer / Contact-seller control on ${target}. Tried ${openSelectors.length} selectors — the page may require login or its markup changed.`,
+              text: `Could not find a Make-an-offer / Contact-seller control on ${target}. Tried ${openSelectors.length} selectors - the page may require login or its markup changed.`,
             },
           ],
         };
@@ -635,7 +635,7 @@ server.tool(
               'money. Verify the listing independently (PPSR, rego, VIN, inspection) before ' +
               'committing. No consumer protection applies to private sales.\n\n' +
               (sent
-                ? `Submitted your message to the seller for ${target} (opened via ${hitOpen}, sent via "${hitSubmit}"; best-effort — confirm in your account/outbox). This offer is now recorded so it cannot be sent again.`
+                ? `Submitted your message to the seller for ${target} (opened via ${hitOpen}, sent via "${hitSubmit}"; best-effort - confirm in your account/outbox). This offer is now recorded so it cannot be sent again.`
                 : `Opened the contact form for ${target} via ${hitOpen} and filled your message, but could not click a Send/Submit button (markup may differ).`),
           },
         ],
@@ -808,7 +808,7 @@ server.tool(
 
 server.tool(
   'search_gumtree_cars',
-  'Search Gumtree.com.au for cars (native, FOSS — no paid API). Returns listings with price, ' +
+  'Search Gumtree.com.au for cars (native, FOSS - no paid API). Returns listings with price, ' +
     'title, location and a link. Best-effort: depends on Gumtree not blocking the request from your IP.',
   {
     query: z.string().describe('Search terms, e.g. "toyota corolla", "tesla model 3"'),
@@ -841,7 +841,7 @@ server.tool(
 server.tool(
   'price_insight',
   'Free, FOSS valuation. Derives a fair-price band (median + 25th/75th percentile) from ' +
-    'free comparable carsales listings for the same make/model/year — no paid RedBook/CarHistory. ' +
+    'free comparable carsales listings for the same make/model/year - no paid RedBook/CarHistory. ' +
     'Optionally judges a specific target price.',
   {
     make: z.string().describe('Car make, e.g. "Toyota"'),
@@ -942,7 +942,7 @@ server.tool(
     const rows = fields.map((f) => {
       const cells = details.map((d) => {
         const v = (d.metadata as any)[f];
-        return v == null ? '—' : String(v);
+        return v == null ? '-' : String(v);
       });
       return [f, ...cells].join(' | ');
     });
@@ -985,7 +985,7 @@ server.tool(
 
 server.tool(
   'watch_search',
-  'Save a search to watch for NEW listings (FOSS alerts — no paid service). Re-run check_watch ' +
+  'Save a search to watch for NEW listings (FOSS alerts - no paid service). Re-run check_watch ' +
     'later to see what appeared since the last check. Sources: carsales (default), gumtree, facebook.',
   {
     name: z.string().describe('Watch name, e.g. "toyota-corolla-sydney"'),
@@ -1020,7 +1020,7 @@ server.tool(
 
 server.tool(
   'watch_listing',
-  'Watch a SINGLE listing for a PRICE DROP (FOSS alerts — no paid service). Re-run check_watch ' +
+  'Watch a SINGLE listing for a PRICE DROP (FOSS alerts - no paid service). Re-run check_watch ' +
     'later to see if the price changed (especially a drop). Works for carsales, Facebook and ' +
     'Gumtree listing URLs.',
   {
@@ -1070,7 +1070,7 @@ server.tool(
   'check_watch',
   'Re-run a saved watch and report what changed. For search watches: NEW listings since the last ' +
     'check. For listing watches: a PRICE DROP (or any price change). Pure local diff over free ' +
-    'search results — no paid alert service.',
+    'search results - no paid alert service.',
   {
     name: z.string().describe('Watch name to check'),
   },
@@ -1094,12 +1094,12 @@ server.tool(
           ],
         };
       if (prev == null)
-        return { content: [{ type: 'text', text: `Now watching "${name}" — current price ${price != null ? '$' + Math.round(price).toLocaleString() : 'unknown'}.\n${d.url}` }] };
+        return { content: [{ type: 'text', text: `Now watching "${name}" - current price ${price != null ? '$' + Math.round(price).toLocaleString() : 'unknown'}.\n${d.url}` }] };
       return {
         content: [
           {
             type: 'text',
-            text: `No drop on "${name}" — still ${price != null ? '$' + Math.round(price).toLocaleString() : 'unknown'} (was ${'$' + Math.round(prev).toLocaleString()}).\n${d.url}`,
+            text: `No drop on "${name}" - still ${price != null ? '$' + Math.round(price).toLocaleString() : 'unknown'} (was ${'$' + Math.round(prev).toLocaleString()}).\n${d.url}`,
           },
         ],
       };
@@ -1118,6 +1118,18 @@ server.tool(
           text: `${res.newCards.length} NEW listing(s) for "${name}":\n\n${text}`,
         },
       ],
+    };
+  },
+);
+
+server.tool(
+  'remove_watch',
+  'Delete a saved watch (search or listing) by name.',
+  { name: z.string().describe('Watch name to delete') },
+  async ({ name }) => {
+    const ok = removeWatch(name);
+    return {
+      content: [{ type: 'text', text: ok ? `Removed watch "${name}".` : `No watch named "${name}".` }],
     };
   },
 );
@@ -1143,7 +1155,7 @@ server.tool(
         {
           type: 'text',
           text:
-            `Vehicle check (${r.plate}, ${r.state}) — automated: ${r.automated ? 'some data' : 'none'}.\n\n` +
+            `Vehicle check (${r.plate}, ${r.state}) - automated: ${r.automated ? 'some data' : 'none'}.\n\n` +
             `${r.text}\n\nManual verification (human-in-the-loop): ${r.manualUrl}`,
         },
       ],
@@ -1155,7 +1167,7 @@ server.tool(
   'dealer_info',
   'Look up a seller/dealer reputation. For carsales dealer pages this scrapes the star rating + ' +
     'review count (best-effort). Facebook and Gumtree are mostly PRIVATE sellers with no dealer ' +
-    'rating — for those it just confirms the seller type. Use before contacting anyone.',
+    'rating - for those it just confirms the seller type. Use before contacting anyone.',
   {
     url: z.string().optional().describe('carsales dealer page URL (or any listing URL)'),
     name: z.string().optional().describe('Dealer/seller name to echo'),
@@ -1173,7 +1185,7 @@ server.tool(
         content: [
           {
             type: 'text',
-            text: `That URL is on ${/facebook\.com/.test(url) ? 'Facebook Marketplace' : 'Gumtree'} — ` +
+            text: `That URL is on ${/facebook\.com/.test(url) ? 'Facebook Marketplace' : 'Gumtree'} - ` +
               `these are predominantly PRIVATE sellers with no dealer rating. Verify the individual ` +
               `listing and meet in a safe, public place. Never pay before inspecting the car.`,
           },
@@ -1204,7 +1216,7 @@ server.tool(
         {
           type: 'text',
           text:
-            `Dealer reputation (best-effort): ${name ? name + ' — ' : ''}` +
+            `Dealer reputation (best-effort): ${name ? name + ' - ' : ''}` +
             `${rating != null ? `rating ${rating}/5` : 'rating n/a'}` +
             `${reviews != null ? ` across ${reviews} review(s)` : ''}.\n${url}`,
         },
