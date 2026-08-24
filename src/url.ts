@@ -16,6 +16,8 @@ export interface SearchParams {
   minYear?: number;
   maxYear?: number;
   maxOdometer?: number;
+  postcode?: string;
+  radius?: number;
   sort?: string;
   page?: number;
   limit?: number;
@@ -107,8 +109,12 @@ export function buildSearchUrl(p: SearchParams): string {
 
   let url = 'https://www.carsales.com.au/' + segments.join('/') + '/';
 
-  if (p.keyword) url += `?q=${encodeURIComponent(p.keyword)}`;
-  if (p.page && p.page > 1) url += (url.includes('?') ? '&' : '?') + `page=${p.page}`;
+  const params: string[] = [];
+  if (p.keyword) params.push(`q=${encodeURIComponent(p.keyword)}`);
+  if (p.postcode) params.push(`postcode=${encodeURIComponent(p.postcode)}`);
+  if (p.radius != null) params.push(`distance=${encodeURIComponent(String(p.radius))}`);
+  if (p.page && p.page > 1) params.push(`page=${p.page}`);
+  if (params.length) url += '?' + params.join('&');
 
   return url;
 }

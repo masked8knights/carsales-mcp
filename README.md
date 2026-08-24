@@ -34,6 +34,8 @@ year / odometer are filtered in-memory from the listing cards (these have no sim
 | `minPrice` / `maxPrice` | number | AUD |
 | `minYear` / `maxYear` | number | build year |
 | `maxOdometer` | number | km |
+| `postcode` | string | restrict to a postcode (carsales location facet) |
+| `radius` | number | search radius in km around the postcode (carsales distance facet) |
 | `sort` | enum | `price_low`, `price_high`, `year_new`, `year_old`, `km_low` |
 | `goodDealsOnly` | bool | only return listings flagged GOOD/GREAT deals (badge + price/year/odometer) |
 | `page` | number | results page (1-based) |
@@ -72,10 +74,32 @@ with a short `why:` explanation, so the AI can proactively surface bargains. The
   through the **same browser/proxy/engine** stack as carsales (Camoufox + proxy +
   retries). Best-effort: Facebook may block requests from some IPs. Params: `query`,
   `location` (city, default `sydney`), `minPrice`, `maxPrice`, `limit`.
-- **`search_all_cars`** — the one-shot "find me a car" tool: searches **both**
-  carsales **and** Facebook Marketplace, returns combined results tagged by source
-  (`[carsales]` / `[facebook]`), filtered, good-deal-sorted, with a deal summary.
-  Params mirror `search_cars` plus `location` (for Facebook) and `goodDealsOnly`.
+- **`search_all_cars`** — the one-shot "find me a car" tool: searches **carsales**,
+  **Facebook Marketplace** and **Gumtree**, returns combined, de-duplicated results tagged by
+  source (`[carsales]` / `[facebook]` / `[gumtree]`), filtered, good-deal-sorted, with a deal
+  summary. Params mirror `search_cars` plus `location` (for Facebook/Gumtree) and `goodDealsOnly`.
+
+> Everything here is **100% FOSS** — no paid API keys (Carapis/RedBook/PPSR) are required for
+> any feature. Paid equivalents are noted only where they’d add data we deliberately don’t pay for.
+
+## More free sources & tools
+
+- **`search_gumtree_cars`** — native Gumtree.com.au car search (HTML-scraped through the same
+  hardened browser stack; best-effort, like the rest). Adds a third free marketplace to cover.
+- **`price_insight`** — free valuation. Builds a fair-price band (median + 25th/75th percentile)
+  from **free comparable carsales listings** for the same make/model/year. The paid alternative is
+  RedBook/CarHistory; we approximate it for $0 and never call a paid endpoint.
+- **`compare_listings`** — side-by-side comparison of 2–3 listings (pulls full details for each).
+- **`export_csv`** — dump a carsales search to CSV (spreadsheet-friendly) with no external service.
+- **Saved-search alerts (FOSS, no paid service):** `watch_search` saves a search; `list_watches`
+  lists them; `check_watch` re-runs it and reports listings **new since the last check** (local
+  ID-diff). `remove_watch` deletes one. Great for "tell me when a cheap Corolla appears".
+- **`check_vehicle`** — free vehicle trust check. Points at the official **state-transport
+  registration check** (registration validity + written-off status) and attempts a best-effort
+  automated lookup. **Encumbrance (finance owed) lives only on the paid PPSR** and is intentionally
+  out of scope — the tool always returns the official manual URL so a human can verify. Government
+  rego pages are often CAPTCHA / datacenter-blocked, so the automated lookup may return nothing; in
+  that case verify manually at the URL provided.
 
 > `secondhand-mcp` (optional dependency) remains available for **eBay / Depop /
 > Poshmark** and other non-car marketplaces, avoiding overlap with the native

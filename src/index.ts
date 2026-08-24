@@ -17,7 +17,11 @@ import { buildSearchUrl, SearchParams } from './url.js';
 import { parseDetails } from './details.js';
 import { searchCars } from './provider.js';
 import { searchFacebookCars } from './facebook.js';
+import { searchGumtreeCars } from './gumtree.js';
 import { computeDeal } from './deal.js';
+import { computePriceInsight, formatInsight } from './insight.js';
+import { addWatch, listWatches, removeWatch, runWatch, WatchSource } from './watch.js';
+import { checkVehicle } from './vehicle.js';
 
 const server = new McpServer({
   name: 'carsales-mcp',
@@ -92,6 +96,8 @@ server.tool(
     minYear: z.number().optional().describe('Minimum build year'),
     maxYear: z.number().optional().describe('Maximum build year'),
     maxOdometer: z.number().optional().describe('Maximum odometer in km'),
+    postcode: z.string().optional().describe('Restrict to a postcode (carsales location facet)'),
+    radius: z.number().optional().describe('Search radius in km around the postcode (carsales distance facet)'),
     sort: z
       .enum(['price_low', 'price_high', 'year_new', 'year_old', 'km_low'])
       .optional()
@@ -741,18 +747,22 @@ server.tool(
   },
   async ({ make, model, location, state, minPrice, maxPrice, minYear, maxYear, goodDealsOnly, limit }) => {
     const query = [make, model].filter(Boolean).join(' ');
-    const [csRes, fbRes] = await Promise.allSettled([
+    const [csRes, fbRes, gtRes] = await Promise.allSettled([
       searchCars({ make, model, state, minPrice, maxPrice, minYear, maxYear, limit: 100 } as SearchParams),
       searchFacebookCars({ query, location, minPrice, maxPrice, limit: 40 }),
+      searchGumtreeCars({ query, location, minPrice, maxPrice, limit: 40 }),
     ]);
     const carsales = csRes.status === 'fulfilled' ? csRes.value : [];
     const facebook = fbRes.status === 'fulfilled' ? fbRes.value : [];
+    const gumtree = gtRes.status === 'fulfilled' ? gtRes.value : [];
     if (csRes.status === 'rejected')
       console.error('[carsales-mcp] carsales leg failed:', (csRes.reason as Error).message);
     if (fbRes.status === 'rejected')
       console.error('[carsales-mcp] facebook leg failed:', (fbRes.reason as Error).message);
+    if (gtRes.status === 'rejected')
+      console.error('[carsales-mcp] gumtree leg failed:', (gtRes.reason as Error).message);
 
-    let cards = dedupeListings([...carsales, ...facebook]);
+    let cards = dedupeListings([...carsales, ...facebook, ...gumtree]);
     if (minPrice != null) cards = cards.filter((c) => (c.price ?? c.priceExGovt ?? 0) >= minPrice);
     if (maxPrice != null) cards = cards.filter((c) => (c.price ?? c.priceExGovt ?? Infinity) <= maxPrice);
     if (minYear != null) cards = cards.filter((c) => (c.year ?? 0) >= minYear);
@@ -771,8 +781,265 @@ server.tool(
         {
           type: 'text',
           text:
-            `Combined search across carsales (${carsales.length}) + Facebook (${facebook.length}) ` +
+            `Combined search across carsales (${carsales.length}) + Facebook (${facebook.length}) + Gumtree (${gumtree.length}) ` +
             `-> showing ${limited.length}${goodCount ? `, ${goodCount} good deals` : ''}.\n\n${text}`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'search_gumtree_cars',
+  'Search Gumtree.com.au for cars (native, FOSS — no paid API). Returns listings with price, ' +
+    'title, location and a link. Best-effort: depends on Gumtree not blocking the request from your IP.',
+  {
+    query: z.string().describe('Search terms, e.g. "toyota corolla", "tesla model 3"'),
+    location: z.string().optional().describe('Gumtree location filter, e.g. "sydney"'),
+    minPrice: z.number().optional().describe('Minimum price in AUD'),
+    maxPrice: z.number().optional().describe('Maximum price in AUD'),
+    limit: z.number().optional().default(20).describe('Max results to return'),
+  },
+  async ({ query, location, minPrice, maxPrice, limit }) => {
+    let cards: ListingCard[];
+    try {
+      cards = await searchGumtreeCars({ query, location, minPrice, maxPrice, limit });
+    } catch (e) {
+      return { content: [{ type: 'text', text: 'Gumtree search failed: ' + (e as Error).message }] };
+    }
+    if (!cards.length) return { content: [{ type: 'text', text: 'No Gumtree listings found.' }] };
+    const text = cards.map((c, i) => `${i + 1}. ${formatSourceCard(c)}`).join('\n');
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Found ${cards.length} Gumtree listing(s) for "${query}".\n\n${text}`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'price_insight',
+  'Free, FOSS valuation. Derives a fair-price band (median + 25th/75th percentile) from ' +
+    'free comparable carsales listings for the same make/model/year — no paid RedBook/CarHistory. ' +
+    'Optionally judges a specific target price.',
+  {
+    make: z.string().describe('Car make, e.g. "Toyota"'),
+    model: z.string().optional().describe('Car model, e.g. "Camry"'),
+    state: z.string().optional().describe('Australian state to bias comparables'),
+    minYear: z.number().optional().describe('Minimum build year for comparables'),
+    maxYear: z.number().optional().describe('Maximum build year for comparables'),
+    targetPrice: z.number().optional().describe('Optional price to judge against the band'),
+  },
+  async ({ make, model, state, minYear, maxYear, targetPrice }) => {
+    const cards = await searchCars({
+      make,
+      model,
+      state,
+      minYear,
+      maxYear,
+      limit: 100,
+    } as SearchParams).catch(() => [] as ListingCard[]);
+    const insight = computePriceInsight(cards);
+    if (!insight.count)
+      return {
+        content: [
+          { type: 'text', text: `No free comparable listings found for ${make} ${model ?? ''} to build a price band.` },
+        ],
+      };
+    return {
+      content: [{ type: 'text', text: formatInsight(insight, make, model, targetPrice ?? null) }],
+    };
+  },
+);
+
+server.tool(
+  'compare_listings',
+  'Side-by-side comparison of 2–3 listings (by listingId or url). Pulls full details for each ' +
+    'and renders a comparison table so the model can surface differences.',
+  {
+    listings: z
+      .array(
+        z.object({
+          listingId: z.string().optional().describe('carsales listing id, e.g. OAG-AD-26099426'),
+          url: z.string().optional().describe('Full listing URL (carsales)'),
+        }),
+      )
+      .min(2)
+      .max(3)
+      .describe('2–3 listings to compare'),
+    includeImages: z.boolean().optional().default(false).describe('Also return photos as image blocks'),
+  },
+  async ({ listings, includeImages }) => {
+    const details: { id: string; title: string | null; url: string; metadata: Record<string, unknown> }[] = [];
+    for (const l of listings) {
+      let target = l.url;
+      if (!target && l.listingId) target = `https://www.carsales.com.au/cars/details/${l.listingId}/`;
+      if (!target) continue;
+      details.push(await describeListing(l.listingId, target, includeImages));
+    }
+    if (details.length < 2)
+      return { content: [{ type: 'text', text: 'Provide at least 2 resolvable listings.' }] };
+    const fields: (keyof (typeof details)[0]['metadata'])[] = [
+      'price',
+      'year',
+      'odometer',
+      'transmission',
+      'fuelType',
+      'bodyType',
+      'engine',
+      'seller',
+      'state',
+    ];
+    const header = ['field', ...details.map((d) => d.title || d.id)].join(' | ');
+    const rows = fields.map((f) => {
+      const cells = details.map((d) => {
+        const v = (d.metadata as any)[f];
+        return v == null ? '—' : String(v);
+      });
+      return [f, ...cells].join(' | ');
+    });
+    const out =
+      `Comparison (${details.length} listings):\n\n${header}\n${rows.join('\n')}\n\n` +
+      details.map((d) => `${d.title || d.id}: ${d.url}`).join('\n');
+    return { content: [{ type: 'text', text: out }] };
+  },
+);
+
+server.tool(
+  'export_csv',
+  'Export a carsales search to CSV (free, no external service) so results can be opened in a ' +
+    'spreadsheet. Returns the CSV as a text block.',
+  {
+    make: z.string().describe('Car make, e.g. "Toyota"'),
+    model: z.string().optional().describe('Car model, e.g. "Camry"'),
+    state: z.string().optional().describe('Australian state'),
+    minPrice: z.number().optional().describe('Minimum price in AUD'),
+    maxPrice: z.number().optional().describe('Maximum price in AUD'),
+    minYear: z.number().optional().describe('Minimum build year'),
+    maxYear: z.number().optional().describe('Maximum build year'),
+    postcode: z.string().optional().describe('Restrict to a postcode'),
+    radius: z.number().optional().describe('Search radius in km around the postcode'),
+    limit: z.number().optional().default(50).describe('Max results to return'),
+  },
+  async (p) => {
+    const cards = await searchCars(p as SearchParams).catch(() => [] as ListingCard[]);
+    if (!cards.length) return { content: [{ type: 'text', text: 'No listings to export.' }] };
+    const cols = ['source', 'id', 'title', 'year', 'price', 'priceExGovt', 'odometer', 'transmission', 'fuelType', 'bodyType', 'seller', 'state', 'url'];
+    const esc = (v: unknown) => {
+      const s = v == null ? '' : String(v);
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const rows = cards.map((c) => cols.map((k) => esc((c as any)[k])).join(','));
+    const csv = [cols.join(','), ...rows].join('\n');
+    return { content: [{ type: 'text', text: csv }] };
+  },
+);
+
+server.tool(
+  'watch_search',
+  'Save a search to watch for NEW listings (FOSS alerts — no paid service). Re-run check_watch ' +
+    'later to see what appeared since the last check. Sources: carsales (default), gumtree, facebook.',
+  {
+    name: z.string().describe('Watch name, e.g. "toyota-corolla-sydney"'),
+    make: z.string().describe('Car make'),
+    model: z.string().optional().describe('Car model'),
+    state: z.string().optional().describe('Australian state'),
+    minPrice: z.number().optional().describe('Minimum price in AUD'),
+    maxPrice: z.number().optional().describe('Maximum price in AUD'),
+    minYear: z.number().optional().describe('Minimum build year'),
+    maxYear: z.number().optional().describe('Maximum build year'),
+    sources: z
+      .array(z.enum(['carsales', 'gumtree', 'facebook']))
+      .optional()
+      .describe('Sources to watch (default: carsales only)'),
+  },
+  async ({ name, make, model, state, minPrice, maxPrice, minYear, maxYear, sources }) => {
+    const w = addWatch(
+      name,
+      { make, model, state, minPrice, maxPrice, minYear, maxYear, limit: 100 } as SearchParams,
+      (sources as WatchSource[]) || ['carsales'],
+    );
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Watching "${name}" across [${w.sources.join(', ')}]. Call check_watch with this name to see new listings.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'list_watches',
+  'List all saved search watches (see watch_search).',
+  {},
+  async () => {
+    const ws = listWatches();
+    if (!ws.length) return { content: [{ type: 'text', text: 'No watches saved.' }] };
+    return {
+      content: [
+        {
+          type: 'text',
+          text: ws.map((w) => `- ${w.name} [${w.sources.join(', ')}] (last seen ${w.lastIds.length} listings)`).join('\n'),
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'check_watch',
+  'Re-run a saved watch (watch_search) and report listings NEW since the last check. Pure local ' +
+    'diff over free search results — no paid alert service.',
+  {
+    name: z.string().describe('Watch name to check'),
+  },
+  async ({ name }) => {
+    const res = await runWatch(name);
+    if (!res) return { content: [{ type: 'text', text: `No watch named "${name}".` }] };
+    if (!res.newCards.length)
+      return {
+        content: [{ type: 'text', text: `No new listings for "${name}" (tracking ${res.total} total).` }],
+      };
+    const text = res.newCards.map((c, i) => `${i + 1}. ${formatSourceCard(c)}`).join('\n');
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `${res.newCards.length} NEW listing(s) for "${name}":\n\n${text}`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'check_vehicle',
+  'Free vehicle trust check (FOSS, NO paid PPSR). Points at the official state-transport ' +
+    'registration check (registration validity + written-off status) and attempts a best-effort ' +
+    'automated lookup. Encumbrance (finance owed) is ONLY on paid PPSR and is intentionally out ' +
+    'of scope. The manual URL is always returned for independent human verification.',
+  {
+    plate: z.string().describe('Registration plate, e.g. "ABC123"'),
+    state: z
+      .string()
+      .optional()
+      .default('nsw')
+      .describe('Australian state: nsw, vic, qld, wa, sa, tas, act, nt'),
+  },
+  async ({ plate, state }) => {
+    const r = await checkVehicle(plate, state);
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Vehicle check (${r.plate}, ${r.state}) — automated: ${r.automated ? 'some data' : 'none'}.\n\n` +
+            `${r.text}\n\nManual verification (human-in-the-loop): ${r.manualUrl}`,
         },
       ],
     };
