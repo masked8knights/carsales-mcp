@@ -83,6 +83,23 @@ with a short `why:` explanation, so the AI can proactively surface bargains. The
 
 ## Login & authenticated actions
 
+> [!WARNING]
+> **USE AT YOUR OWN RISK — account bans are possible.**
+> Authenticated actions (`save_vehicle`, `make_offer`) log into carsales.com.au **as your
+> real account** by replaying cookies you exported from your browser. carsales' terms of
+> service prohibit automated access, and automated login / scripting can get your account
+> **suspended or permanently banned** — with no recourse. This risk is **yours**, not the
+> tool's. In practice:
+> - Prefer doing saved-search / contact actions **manually in your browser**; use these
+>   tools only when you accept the risk.
+> - **Don't burn a primary account.** A throwaway/secondary account is strongly recommended.
+> - Creating fresh accounts purely to automate **may still be banned**, and **phone-number
+>   verification is often required and can itself be blocked/flagged** — so a throwaway
+>   number may not save you. Assume any account used for automation can be lost.
+> - These tools contact **real people about real money**. Always keep a human in the loop
+>   (the built-in `confirm: true` gate) and verify listings independently (PPSR, rego, VIN,
+>   inspection) before committing.
+
 Some carsales actions require an account. Because this server runs headless, you log in by
 importing cookies from your own browser (not by typing credentials into the bot):
 
