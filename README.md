@@ -133,6 +133,18 @@ importing cookies from your own browser (not by typing credentials into the bot)
 
 Then call **`set_auth`** with the cookies array (DevTools → Application → Cookies, or a cookie
 export extension). The session is persisted to `CARS_COOKIE_FILE` and reused on every request.
+
+**How to export your carsales cookies** (the part people get stuck on):
+1. Log into **carsales.com.au** in your normal browser (desktop Chrome/Edge/Firefox).
+2. Open DevTools (F12) → **Application** tab → **Cookies** → `https://www.carsales.com.au`.
+3. Select all rows and copy them (or use an extension like *Cookie-Editor* → **Export** → JSON).
+   You need the **array** of cookie objects: `[{ "name": "...", "value": "...", "domain": "...", ... }, ...]`.
+4. Paste that array as the `cookies` argument to **`set_auth`** (or save it to `CARS_COOKIE_FILE`).
+5. Call **`auth_status`** to confirm it worked. If it says "could not confirm login", the account
+   page is likely bot-blocked from this network — log in again in the browser and re-export.
+
+> We deliberately do **not** support typing your password into the bot or automating the login
+> form — cookie import is the only path, so your password never touches this server.
 Verify with **`auth_status`**.
 
 Once authenticated you can:
