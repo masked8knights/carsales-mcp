@@ -391,6 +391,11 @@ function highRiskBanner(action: string, planned: string[]): string {
     'VIN/odometer, pre-purchase inspection) before committing. Marketplace scams are',
     'common — if a price looks too good to be true, it probably is.',
     '',
+    'ANTI-BOT / HUMAN-TONE: the message you supply is sent VERBATIM (the AI does not',
+    'write or rewrite it). Do NOT send the SAME message to many sellers — identical bulk',
+    'messages are the #1 "bot" tell and can get your account flagged or banned. Personalize',
+    'each message per listing. Messages are also paced with a short random delay before send.',
+    '',
     'No action was taken. To proceed, call this tool again with confirm: true.',
   ].join('\n');
 }
@@ -618,6 +623,9 @@ server.tool(
       let hitSubmit = '';
       if (await submitSel.count()) {
         try {
+          // Human-like pacing: a short randomized delay before submitting helps avoid
+          // the "instant bot" pattern (and is polite to the seller).
+          await page.waitForTimeout(1500 + Math.floor(Math.random() * 3000));
           await submitSel.click({ timeout: 5000 });
           sent = true;
           hitSubmit = (await submitSel.textContent())?.trim() || hitSubmit;

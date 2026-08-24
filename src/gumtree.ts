@@ -13,7 +13,6 @@
 import { getPage, fetchSearchHtml, ListingCard } from './browser.js';
 
 const SEARCH_BASE = 'https://www.gumtree.com.au/s-cars-vans-utes';
-const DETAIL_RE = /href="(\/s-ad\/[^"]+)"/g;
 
 export interface GumtreeSearchParams {
   query: string;
@@ -34,36 +33,35 @@ function idFromGumtreeUrl(u: string): string | null {
   return m ? m[1] : null;
 }
 
-function parseGumtree(html: string, limit: number): ListingCard[] {
+export function parseGumtree(html: string, limit: number): ListingCard[] {
   const cards: ListingCard[] = [];
   const seen = new Set<string>();
-  let m: RegExpExecArray | null;
-  DETAIL_RE.lastIndex = 0;
-  while ((m = DETAIL_RE.exec(html)) && cards.length < limit) {
-    const href = m[1];
-    const id = idFromGumtreeUrl(href);
+
+  // Gumtree embeds listing data as JSON: each listing has a `"url"` of the form
+  // …/web/listing/…/<id>. We pair each URL with the nearest *preceding* `"title"`
+  // (so the site title doesn't get mis-associated with the first listing).
+  const urlRe = /"url":"(https:\/\/www\.gumtree\.com\.au\/web\/listing\/[^"]+)"/g;
+  const titleRe = /"title":"([^"]{5,60})"/g;
+  let um: RegExpExecArray | null;
+  while ((um = urlRe.exec(html)) && cards.length < limit) {
+    const url = um[1];
+    const id = idFromGumtreeUrl(url);
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    // Bound the scan to this card (20KB window) and pull what we can.
-    const scan = m.index + m[0].length;
-    const seg = html.slice(scan, scan + 20000);
-    const text = seg.replace(/<[^>]+>/g, ' ');
-    const priceM = seg.match(/\$([\d,]{3,})/);
-    const price = priceM ? num(priceM[1]) : null;
-    const yearM = seg.match(/\b(19|20)\d{2}\b/);
+    const before = html.slice(0, um.index);
+    const titles = [...before.matchAll(titleRe)];
+    const title = titles.length ? titles[titles.length - 1][1] : url;
+    const yearM = title.match(/\b(19|20)\d{2}\b/);
     const year = yearM ? Number(yearM[1]) : null;
-    const kmM = text.match(/([\d,]{2,})\s*km\b/i);
+    // Price isn't in the JSON; scan a window around this listing's URL in the HTML.
+    const win = html.slice(Math.max(0, um.index - 600), um.index + 600).replace(/<[^>]+>/g, ' ');
+    const priceM = win.match(/\$([\d,]{3,})/);
+    const price = priceM ? num(priceM[1]) : null;
+    const kmM = win.match(/([\d,]{2,})\s*km\b/i);
     const odometer = kmM ? num(kmM[1]) : null;
-    // Title: prefer an anchor's text near the link, else derive from the URL slug.
-    const titleM = seg.match(/<a[^>]+[^>]*>([^<]{6,80})<\/a>/);
-    const slug = href.split('/').filter(Boolean).pop() || '';
-    const title =
-      titleM && titleM[1].trim().length > 3
-        ? titleM[1].trim()
-        : slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
     cards.push({
       id,
-      url: 'https://www.gumtree.com.au' + href,
+      url,
       title,
       source: 'gumtree',
       year,

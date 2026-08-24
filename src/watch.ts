@@ -129,5 +129,26 @@ export async function runWatch(
   const idx = watches.findIndex((w) => w.name === name);
   watches[idx] = watch;
   save(watches);
+
+  // Optional free push alert (no paid service): POST new listings to a webhook
+  // URL, e.g. an ntfy/Discord/Slack incoming webhook. Never throws on failure.
+  const webhook = process.env.CARS_WATCH_WEBHOOK;
+  if (webhook && newCards.length) {
+    try {
+      const body = {
+        watch: watch.name,
+        count: newCards.length,
+        listings: newCards.map((c) => ({ title: c.title, price: c.price, source: c.source, url: c.url })),
+      };
+      await fetch(webhook, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }).catch(() => {});
+    } catch {
+      // best-effort alert
+    }
+  }
+
   return { watch, newCards, total: cards.length };
 }

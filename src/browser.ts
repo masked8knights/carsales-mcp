@@ -139,9 +139,14 @@ async function getBrowser(): Promise<Browser> {
 }
 
 function baseContextOptions(): any {
+  // IMPORTANT: the UA must match the engine. Camoufox is Firefox-based, so a
+  // Chrome UA on Firefox is a classic fingerprint mismatch that trips anti-bot.
+  const firefoxUA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0';
+  const chromeUA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
   const opts: any = {
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    userAgent: isFirefox() ? firefoxUA : chromeUA,
     locale: 'en-AU',
     timezoneId: 'Australia/Sydney',
   };

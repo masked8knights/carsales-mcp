@@ -267,6 +267,7 @@ Other tuning env vars:
 | `CARAPIS_API_KEY` | – | use Carapis REST API for search (no scraping) |
 | `CARS_PROXY` | – | single proxy or comma-separated rotation list |
 | `CARS_COOKIE_FILE` | `~/.carsales-mcp/cookies.json` | where the login session cookies are stored |
+| `CARS_WATCH_WEBHOOK` | – | optional: POST new `watch_search` listings here (ntfy/Discord/Slack) — free alerts, no paid service |
 | `CARS_MIN_DELAY` | `1500` | min ms between navigations (be polite) |
 | `CARS_RETRIES` | `3` | retry attempts when a DataDome challenge is hit |
 | `CARS_BACKOFF` | `2000` | backoff ms between retries (doubles each try) |
@@ -280,6 +281,30 @@ Other tuning env vars:
 - DataDome may occasionally challenge; if a search returns nothing, just retry.
 - Respect carsales' terms of service and avoid hammering with very high page counts.
 - No official carsales API is used — this scrapes the public site via a real browser.
+
+## Anti-blocking (what we have, and what we don't)
+
+**We have (all FOSS):**
+- **3-tier engine fallback:** jo-inc Camoufox (hardest-to-fingerprint Firefox build) →
+  camoufox-js stable → hardened Chromium. `CARS_ENGINE` pins a tier.
+- **Correct fingerprint:** the browser's User-Agent matches its engine (Firefox UA on Camoufox,
+  Chrome UA on Chromium) — a mismatched UA is a classic bot tell we fixed.
+- `navigator.webdriver` is stripped; `locale`/`timezone` set to `en-AU` / `Australia/Sydney`.
+- **Proxy rotation:** `CARS_PROXY` (single or comma-separated list, rotated per request).
+- **Politeness + retries:** `CARS_MIN_DELAY` between navigations, `CARS_RETRIES` + `CARS_BACKOFF`
+  on a DataDome challenge.
+- Failing gracefully: a blocked/403 page degrades to fewer (or zero) results, never a crash.
+
+**We deliberately do NOT have a CAPTCHA solver.** Solving DataDome/hCaptcha needs a paid service
+(2captcha etc.), which conflicts with the 100% FOSS goal. Our strategy is *avoidance* — a clean
+residential IP + Camoufox + proxy — not solving. If a site throws a CAPTCHA, the tool reports it and
+stops; verify manually in your browser.
+
+## Self-test / regression
+
+`node scripts/selftest.mjs` live-fetches carsales + Gumtree + Facebook, saves the raw HTML as a
+fixture, and asserts the parsers extract listings (so markup changes that silently break scraping
+are caught). Run `node scripts/selftest.mjs --offline` to re-parse saved fixtures without network.
 
 ## License
 
