@@ -651,6 +651,31 @@ function formatSourceCard(c: ListingCard): string {
   return `${flag}${c.title}\n   [${c.source}] ${price} | ${bits.join(' | ')}\n   ${c.url}`;
 }
 
+function normalizeListingKey(title: string | undefined): string {
+  return (title ?? '')
+    .toLowerCase()
+    .replace(/\b(?:19|20)\d{2}\b/g, '') // drop build year
+    .replace(/\$[\d,]+(?:\.\d+)?/g, '') // drop prices
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(?:used|new|demo|auto|automatic|manual|private|dealer|hatch|suv|sedan|wagon|ute|coupe|van|convertible)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Best-effort cross-source de-duplication: the same car listed on both carsales and
+// Facebook collapses to a single card (carsales kept, since it carries richer data).
+function dedupeListings(cards: ListingCard[]): ListingCard[] {
+  const seen = new Set<string>();
+  const out: ListingCard[] = [];
+  for (const c of cards) {
+    const key = normalizeListingKey(c.title);
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
 server.tool(
   'search_facebook_cars',
   'Search Facebook Marketplace for cars (native, hardened through the same ' +
@@ -727,7 +752,7 @@ server.tool(
     if (fbRes.status === 'rejected')
       console.error('[carsales-mcp] facebook leg failed:', (fbRes.reason as Error).message);
 
-    let cards = [...carsales, ...facebook];
+    let cards = dedupeListings([...carsales, ...facebook]);
     if (minPrice != null) cards = cards.filter((c) => (c.price ?? c.priceExGovt ?? 0) >= minPrice);
     if (maxPrice != null) cards = cards.filter((c) => (c.price ?? c.priceExGovt ?? Infinity) <= maxPrice);
     if (minYear != null) cards = cards.filter((c) => (c.year ?? 0) >= minYear);
