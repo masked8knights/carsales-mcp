@@ -35,6 +35,7 @@ year / odometer are filtered in-memory from the listing cards (these have no sim
 | `minYear` / `maxYear` | number | build year |
 | `maxOdometer` | number | km |
 | `sort` | enum | `price_low`, `price_high`, `year_new`, `year_old`, `km_low` |
+| `goodDealsOnly` | bool | only return listings flagged GOOD/GREAT deals (badge + price/year/odometer) |
 | `page` | number | results page (1-based) |
 | `limit` | number | max results to return (default 25) |
 
@@ -50,6 +51,55 @@ Falls back to summary card data if the detail page is bot-blocked.
   downloaded and returned as MCP **image blocks**, so a multimodal model can literally *see* the
   car. `search` has `includeImages` too (off by default) to attach each result's thumbnail.
 - `search` returns each result's `image` URL in its JSON even when images aren't embedded.
+
+## Good deals (proactive bargain flagging)
+
+Every tool attaches a `deal` assessment to each listing, and `search_cars` can filter to
+bargains with `goodDealsOnly: true`. The score combines:
+
+- **carsales' own price badge** (FAIR / GOOD / GREAT / BAD PRICE) — the primary,
+  market-data-backed signal.
+- **Odometer-for-age** — low km/yr nudges the score up; very high km/yr down.
+- **Price-per-year** — an unusually low $/year nudges up; very high nudges down.
+
+Listings flagged `GREAT`/`GOOD` are marked `[GREAT DEAL]` / `[GOOD DEAL]` in the text output
+with a short `why:` explanation, so the AI can proactively surface bargains. The raw
+`{ score, label, isGoodDeal, reason }` is also returned in each listing's `metadata`.
+
+## Login & authenticated actions
+
+Some carsales actions require an account. Because this server runs headless, you log in by
+importing cookies from your own browser (not by typing credentials into the bot):
+
+```json
+"env": { "CARS_COOKIE_FILE": "/path/to/carsales-cookies.json" }
+```
+
+Then call **`set_auth`** with the cookies array (DevTools → Application → Cookies, or a cookie
+export extension). The session is persisted to `CARS_COOKIE_FILE` and reused on every request.
+Verify with **`auth_status`**.
+
+Once authenticated you can:
+
+- **`save_vehicle`** — add a listing to your watchlist/saved cars.
+- **`make_offer`** — open the seller contact/enquire form and submit a message (and optional
+  offer price).
+
+Both are *best-effort* (they click the relevant control on the live page); selector changes on
+carsales may require tweaks. They fail gracefully with a clear message if the control isn't
+found or you're not logged in.
+
+## Companion: secondhand-mcp (optional)
+
+If you also shop on eBay / Facebook Marketplace / Depop, `secondhand-mcp` is an optional
+companion that follows the same MCP tool contract. Install it alongside this server:
+
+```bash
+npm install secondhand-mcp   # optional; also declared as an optionalDependency
+```
+
+Then register both in your MCP client so the assistant can search carsales *and* secondhand
+marketplaces through one interface.
 
 ## Setup
 
@@ -96,11 +146,20 @@ npx playwright install chromium   # downloads the full Chromium build (needed!)
 
 carsales.com.au is behind DataDome. The server is built to survive this:
 
-**Camoufox is the default engine.** Camoufox is a Firefox-based anti-detect browser with a
-much harder-to-fingerprint profile than Chromium. The Camoufox binary is downloaded
-automatically on first launch (it runs `npx camoufox-js fetch` for you — no manual step), and
-if Camoufox ever fails to launch, the server transparently falls back to Chromium. Force
-Chromium with `CARS_ENGINE=chromium`.
+**Camoufox (jo-inc) is the default engine.** Camoufox is a Firefox-based anti-detect
+browser — originally built by jo-inc (`https://github.com/jo-inc/camofox-browser`) — with a
+much harder-to-fingerprint profile than Chromium. The browser binary is downloaded
+automatically on first launch (`npx camoufox-js fetch`), and the server uses a **3-tier
+fallback chain**:
+
+1. **`joinc`** (default) — the Camoufox build from jo-inc (the hardest-to-fingerprint option).
+2. **`camoufox`** — the camoufox-js packaged stable build.
+3. **`chromium`** — a hardened Chromium (automation flags stripped, `--no-sandbox`).
+
+If a tier fails to launch (e.g. missing system libs), the server transparently drops to the
+next tier, always ending at Chromium. Force a tier with `CARS_ENGINE=joinc|camoufox|chromium`,
+and point Camoufox at a specific binary (e.g. a build you fetched yourself from the jo-inc
+releases) with `CARS_CAMOUFOX_BINARY=/path/to/camoufox`.
 
 **API + scraping balance (mirrors secondhand-mcp).** If you have a
 [Carapis](https://www.carapis.com) API key, set `CARAPIS_API_KEY` and `search_cars` will pull
@@ -124,9 +183,11 @@ Other tuning env vars:
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `CARS_ENGINE` | `camoufox` | `chromium` to force the fallback engine |
+| `CARS_ENGINE` | `joinc` | `joinc` (jo-inc Camoufox) → `camoufox` (stable) → `chromium` fallback |
+| `CARS_CAMOUFOX_BINARY` | – | path to a specific Camoufox binary (e.g. a self-fetched jo-inc build) |
 | `CARAPIS_API_KEY` | – | use Carapis REST API for search (no scraping) |
 | `CARS_PROXY` | – | single proxy or comma-separated rotation list |
+| `CARS_COOKIE_FILE` | `~/.carsales-mcp/cookies.json` | where the login session cookies are stored |
 | `CARS_MIN_DELAY` | `1500` | min ms between navigations (be polite) |
 | `CARS_RETRIES` | `3` | retry attempts when a DataDome challenge is hit |
 | `CARS_BACKOFF` | `2000` | backoff ms between retries (doubles each try) |

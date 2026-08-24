@@ -7,10 +7,23 @@ import { spawn } from 'node:child_process';
 export type { Page };
 export type { Browser, BrowserContext };
 
-// Camoufox is the default engine (harder fingerprint than Chromium). Set
-// CARS_ENGINE=chromium to force the original behaviour. If Camoufox fails to
-// launch (e.g. missing system libs) we transparently fall back to Chromium.
-const ENGINE = (process.env.CARS_ENGINE || 'camoufox').toLowerCase() === 'camoufox' ? 'camoufox' : 'chromium';
+// Engine selection. The default is the Camoufox browser built by jo-inc
+// (https://github.com/jo-inc/camofox-browser) — the hardest-to-fingerprint
+// option. If it fails to launch we fall back to the camoufox-js packaged
+// stable build, and finally to a hardened Chromium. Set CARS_ENGINE to pin a
+// tier: 'joinc' (default) | 'camoufox' | 'chromium'.
+type Engine = 'joinc' | 'camoufox' | 'chromium';
+const ENGINE_RAW = (process.env.CARS_ENGINE || 'joinc').toLowerCase();
+const ENGINE: Engine =
+  ENGINE_RAW === 'chromium' ? 'chromium' : ENGINE_RAW === 'camoufox' ? 'camoufox' : 'joinc';
+
+// Optional: point Camoufox at a specific browser binary (e.g. a build you
+// fetched yourself from github.com/jo-inc/camofox-browser releases).
+const CUSTOM_CAMOUFOX_BINARY = process.env.CARS_CAMOUFOX_BINARY || '';
+
+function isFirefox(): boolean {
+  return ENGINE !== 'chromium';
+}
 
 export function decodeEntities(s: string): string {
   return s
@@ -34,6 +47,13 @@ const MIN_DELAY = Number(process.env.CARS_MIN_DELAY || 1500);
 const MAX_RETRIES = Number(process.env.CARS_RETRIES || 3);
 const BACKOFF = Number(process.env.CARS_BACKOFF || 2000);
 
+// Authenticated sessions: cookies are persisted to this file so a user can log
+// in once (via set_auth / a real browser) and have the session reused across
+// runs and tool calls. Carsales unlocks extra actions (saving a vehicle, making
+// an offer/contacting the seller) for logged-in users.
+const COOKIE_FILE =
+  process.env.CARS_COOKIE_FILE || path.join(os.homedir(), '.carsales-mcp', 'cookies.json');
+
 let lastNav = 0;
 
 function sleep(ms: number) {
@@ -50,7 +70,7 @@ function camoufoxCacheDir(): string {
   return process.env.CAMOUFOX_INSTALL_DIR || path.join(os.homedir(), '.cache', 'camoufox');
 }
 
-async function ensureCamoufoxBinary(): Promise<void> {
+async function ensureCamoufoxBinary(_latest = false): Promise<void> {
   if (fs.existsSync(camoufoxCacheDir())) return;
   console.error('[carsales-mcp] Downloading Camoufox browser (one-time, ~700MB)...');
   await new Promise<void>((resolve) => {
@@ -63,25 +83,20 @@ async function ensureCamoufoxBinary(): Promise<void> {
   });
 }
 
-async function getBrowser(): Promise<Browser> {
-  if (browser) return browser;
-  if (ENGINE === 'camoufox') {
-    try {
-      await ensureCamoufoxBinary();
-      const mod: any = await import('camoufox-js');
-      const { firefox } = await import('playwright');
-      const opts = await mod.launchOptions({});
-      browser = await firefox.launch({ ...opts, headless: true });
-      console.error('[carsales-mcp] Using Camoufox engine.');
-      return browser;
-    } catch (e) {
-      console.error(
-        '[carsales-mcp] Camoufox launch failed, falling back to Chromium:',
-        (e as Error).message.split('\n')[0],
-      );
-    }
+async function launchCamoufox(latest: boolean): Promise<Browser> {
+  await ensureCamoufoxBinary(latest);
+  const mod: any = await import('camoufox-js');
+  const { firefox } = await import('playwright');
+  const opts: any = await mod.launchOptions({});
+  if (CUSTOM_CAMOUFOX_BINARY) {
+    opts.executablePath = CUSTOM_CAMOUFOX_BINARY;
+    console.error(`[carsales-mcp] Using custom Camoufox binary: ${CUSTOM_CAMOUFOX_BINARY}`);
   }
-  browser = await chromium.launch({
+  return firefox.launch({ ...opts, headless: true });
+}
+
+async function launchChromium(): Promise<Browser> {
+  return chromium.launch({
     channel: 'chromium',
     args: [
       '--disable-blink-features=AutomationControlled',
@@ -89,7 +104,38 @@ async function getBrowser(): Promise<Browser> {
       '--disable-dev-shm-usage',
     ],
   });
-  return browser;
+}
+
+// Ordered fallback chain. Default (joinc) tries the jo-inc Camoufox build first,
+// then the camoufox-js stable build, then hardened Chromium. Other ENGINE values
+// shorten the chain but always end in the Chromium fallback.
+function engineOrder(): Engine[] {
+  if (ENGINE === 'chromium') return ['chromium'];
+  if (ENGINE === 'camoufox') return ['camoufox', 'chromium'];
+  return ['joinc', 'camoufox', 'chromium'];
+}
+
+async function getBrowser(): Promise<Browser> {
+  if (browser) return browser;
+  for (const step of engineOrder()) {
+    try {
+      if (step === 'chromium') {
+        browser = await launchChromium();
+        console.error('[carsales-mcp] Using hardened Chromium engine.');
+        return browser;
+      }
+      const latest = step === 'joinc';
+      browser = await launchCamoufox(latest);
+      console.error(`[carsales-mcp] Using Camoufox engine (${step}).`);
+      return browser;
+    } catch (e) {
+      console.error(
+        `[carsales-mcp] Engine "${step}" failed:`,
+        (e as Error).message.split('\n')[0],
+      );
+    }
+  }
+  throw new Error('All browser engines failed to launch');
 }
 
 function baseContextOptions(): any {
@@ -100,18 +146,30 @@ function baseContextOptions(): any {
     timezoneId: 'Australia/Sydney',
   };
   // Firefox (Camoufox) does not support setDefaultViewport; disable it.
-  if (ENGINE === 'chromium') opts.viewport = { width: 1366, height: 900 };
+  if (!isFirefox()) opts.viewport = { width: 1366, height: 900 };
   else opts.viewport = null;
   return opts;
 }
 
-async function newPageWithProxy(): Promise<Page> {
+async function newContext(): Promise<BrowserContext> {
   const b = await getBrowser();
   const ctx = await b.newContext({ ...baseContextOptions(), proxy: pickProxy() });
   await ctx.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   });
-  return ctx.newPage();
+  const cookies = await loadCookies();
+  if (cookies.length) {
+    try {
+      await ctx.addCookies(cookies);
+    } catch {
+      // ignore cookies that don't match the context's domain
+    }
+  }
+  return ctx;
+}
+
+async function newPageWithProxy(): Promise<Page> {
+  return (await newContext()).newPage();
 }
 
 export async function getPage(): Promise<Page> {
@@ -120,16 +178,53 @@ export async function getPage(): Promise<Page> {
     return newPageWithProxy();
   }
   if (!sharedContext) {
-    const b = await getBrowser();
-    sharedContext = await b.newContext({ ...baseContextOptions(), proxy: pickProxy() });
-    await sharedContext.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    });
+    sharedContext = await newContext();
   }
   if (!sharedPage || sharedPage.isClosed()) {
     sharedPage = await sharedContext.newPage();
   }
   return sharedPage;
+}
+
+export async function currentContext(): Promise<BrowserContext | null> {
+  return sharedContext;
+}
+
+async function loadCookies(): Promise<any[]> {
+  try {
+    const data = JSON.parse(fs.readFileSync(COOKIE_FILE, 'utf8'));
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveCookiesToFile(context: BrowserContext): Promise<void> {
+  try {
+    const cookies = await context.cookies();
+    fs.mkdirSync(path.dirname(COOKIE_FILE), { recursive: true });
+    fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2));
+  } catch {
+    // best-effort persistence
+  }
+}
+
+/** Save the current session's cookies to disk (call after a successful login). */
+export async function saveSession(): Promise<boolean> {
+  if (!sharedContext) return false;
+  await saveCookiesToFile(sharedContext);
+  return true;
+}
+
+/** Import cookies (e.g. exported from your own logged-in browser) for reuse. */
+export async function setAuthCookies(cookies: any[]): Promise<void> {
+  if (!Array.isArray(cookies)) throw new Error('cookies must be an array');
+  fs.mkdirSync(path.dirname(COOKIE_FILE), { recursive: true });
+  fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2));
+}
+
+export function authCookieFile(): string {
+  return COOKIE_FILE;
 }
 
 function isBlocked(html: string): boolean {
@@ -165,7 +260,11 @@ async function navigate(page: Page, url: string): Promise<string> {
   return lastHtml;
 }
 
-const DETAIL_RE = /href="(\/cars\/details\/[^"]+)"[^>]*>View details<\/a>/g;
+// Match any link to a carsales listing detail page. The detail URL uses a stable
+// slug pattern (`<4-digit-year>-<make>-<model>/<CODE>-AD-<digits>/`) so we don't
+// depend on the anchor's inner text (which varies / can be localized) to detect
+// listings. This is the most common reason the scraper returned 0 results.
+const DETAIL_RE = /href="(\/cars\/details\/[^"]+)"/g;
 
 export interface ListingCard {
   id: string;
@@ -192,70 +291,151 @@ function num(s: string | null): number | null {
   return m ? Number(m) : null;
 }
 
+// carsales embeds a JSON-LD `OfferCatalog` on the search results page with
+// reliable structured data per listing (price, odometer, body type, image, url).
+// We use that as the primary source and fall back to HTML scanning for fields it
+// omits (badge, transmission, fuel, seller).
+function extractJsonLdItems(html: string): any[] {
+  const m = html.match(
+    /<script data-testid="applicationld-script" type="application\/ld\+json">([\s\S]*?)<\/script>/,
+  );
+  if (!m) return [];
+  try {
+    const data = JSON.parse(m[1]);
+    const graph = Array.isArray(data['@graph']) ? data['@graph'] : [data];
+    for (const g of graph) {
+      if (
+        g &&
+        g['@type'] === 'SearchResultsPage' &&
+        g.mainEntity &&
+        Array.isArray(g.mainEntity.itemListElement)
+      ) {
+        return g.mainEntity.itemListElement.map((e: any) => e.item).filter(Boolean);
+      }
+    }
+    return graph.filter((g: any) => g && g['@type'] === 'Vehicle');
+  } catch {
+    return [];
+  }
+}
+
+function idFromUrl(u: string): string | null {
+  const m = u.match(/([A-Z]{3,4}-AD-\d+)/);
+  return m ? m[1] : null;
+}
+
+function cardFromJsonLd(item: any): Partial<ListingCard> {
+  const url = item.url || '';
+  const name: string = item.name || '';
+  const yearM = name.match(/^(\d{4})/);
+  const mileage = item.mileageFromOdometer?.value;
+  const img = Array.isArray(item.image) && item.image[0]?.url
+    ? item.image[0].url
+    : typeof item.image === 'string'
+      ? item.image
+      : null;
+  return {
+    id: idFromUrl(url) || '',
+    url: url.startsWith('http') ? url : 'https://www.carsales.com.au' + url,
+    title: name,
+    year: yearM ? Number(yearM[1]) : null,
+    price: item.offers?.price != null ? Number(item.offers.price) : null,
+    odometer: mileage != null ? Number(mileage) : null,
+    bodyType: item.bodyType || null,
+    image: img,
+  };
+}
+
+// HTML enrichment for fields the search JSON-LD does not include. Scans plain
+// text (tags stripped) so we don't match CSS-module class names.
 function parseCardSegment(seg: string): Partial<ListingCard> {
   const out: Partial<ListingCard> = {};
-  const specs = [...seg.matchAll(/<title>([^<]+)<\/title>/g)]
-    .map((m) => m[1].trim())
-    .filter(Boolean);
-  for (const s of specs) {
-    const lower = s.toLowerCase();
-    if (/km\b|\skm$/.test(lower) && /\d/.test(s)) out.odometer = num(s);
-    else if (lower.includes('auto') || lower.includes('manual') || lower.includes('cvt'))
-      out.transmission = s;
-    else if (/cyl|hybrid|petrol|diesel|electric|lpg|fuel/i.test(lower)) out.fuelType = s;
-    else if (/(sedan|wagon|suv|hatch|ute|coupe|van|convertible|cab|chassis)/.test(lower))
-      out.bodyType = s;
-    else if (/\d.*(cyl|l\b|cc|electric)/i.test(lower) || lower.includes('engine')) out.engine = s;
-  }
-  const main = seg.match(/\$([\d,]{2,})/);
-  out.price = main ? num(main[1]) : null;
-  const excl = seg.match(/\$([\d,]{2,})\s*Excl\./);
-  out.priceExGovt = excl ? num(excl[1]) : null;
+  const text = seg.replace(/<[^>]+>/g, ' ');
+  const main = seg.match(/\$([\d,]{4,})/);
+  if (main) out.price = num(main[1]);
+  const excl = seg.match(/\$([\d,]{4,})\s*(?:excl?\.?|ex[- ]?gov)/i);
+  if (excl) out.priceExGovt = num(excl[1]);
+  const km = text.match(/([\d,]{2,})\s*km\b/i);
+  if (km) out.odometer = num(km[1]);
+    const badge = text.match(/\b(FAIR|GOOD|GREAT|BAD) PRICE\b/i);
+  if (badge) out.priceBadge = badge[0].toUpperCase();
+  const trans = text.match(/\b(automatic|manual|cvt|sequential|dct|dual clutch)\b/i);
+  if (trans) out.transmission = trans[0];
+  const fuel = text.match(/\b(petrol|diesel|hybrid|electric|plug-in hybrid|lpg)\b/i);
+  if (fuel) out.fuelType = fuel[0];
+  const body = text.match(/\b(sedan|wagon|suv|hatch|hatchback|ute|coupe|van|convertible)\b/i);
+  if (body) out.bodyType = body[0];
   const sell = seg.match(/data-testid="seller-section"[^>]*>\s*<span[^>]*>([^<]+)</);
   if (sell) {
-    const text = sell[1].trim();
-    out.seller = text;
-    const st = text.match(/\b(NSW|VIC|QLD|SA|TAS|WA|ACT|NT)\b/);
+    const t = sell[1].trim();
+    out.seller = t;
+    const st = t.match(/\b(NSW|VIC|QLD|SA|TAS|WA|ACT|NT)\b/);
     out.state = st ? st[1] : null;
   }
-  const badge = seg.match(/(FAIR PRICE|GOOD PRICE|GREAT PRICE|BAD PRICE)/);
-  if (badge) out.priceBadge = badge[1];
   const img = seg.match(/<img[^>]+src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/i);
-  out.image = img ? img[1] : null;
+  if (img) out.image = img[1];
   return out;
 }
 
 export function parseListings(html: string): ListingCard[] {
+  const ldItems = extractJsonLdItems(html);
+  const ldById = new Map<string, any>();
+  for (const it of ldItems) {
+    const id = idFromUrl(it.url || '');
+    if (id) ldById.set(id, it);
+  }
   const cards: ListingCard[] = [];
+  const seen = new Set<string>();
   let m: RegExpExecArray | null;
   DETAIL_RE.lastIndex = 0;
   while ((m = DETAIL_RE.exec(html))) {
     const href = decodeEntities(m[1]);
-    const seg = html.slice(Math.max(0, m.index - 9000), m.index);
     const ids = href.match(/\/cars\/details\/([^/]+)\/([^/]+)\//);
     if (!ids) continue;
     const slug = ids[1];
     const id = ids[2];
+    if (seen.has(id)) continue; // same listing linked from multiple anchors on a card
+    seen.add(id);
+    // Bound the scan to this card. A card contains several /cars/details/ links
+    // (outer link + inner image links), all sharing the SAME id, so we can't just
+    // stop at the next such link. Instead stop at the next *different* listing id
+    // (the start of the following card), capped at 20KB.
+    let scan = m.index + m[0].length;
+    let nextCard = -1;
+    const ID_SCAN = /([A-Z]{3,4}-AD-\d+)/g;
+    ID_SCAN.lastIndex = scan;
+    let sm: RegExpExecArray | null;
+    while ((sm = ID_SCAN.exec(html))) {
+      if (sm[1] !== id) {
+        nextCard = sm.index;
+        break;
+      }
+    }
+    const end = nextCard === -1 ? m.index + 20000 : Math.min(nextCard, m.index + 20000);
+    const seg = html.slice(m.index, end);
+    const htmlMeta = parseCardSegment(seg);
+    const ld = ldById.get(id);
+    const base = ld ? cardFromJsonLd(ld) : ({} as Partial<ListingCard>);
     const yearMatch = slug.match(/^(\d{4})/);
-    const meta = parseCardSegment(seg);
-    const title = slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    const title =
+      (base.title as string) || slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
     cards.push({
       id,
-      url: 'https://www.carsales.com.au' + href,
+      url: base.url || 'https://www.carsales.com.au' + href,
       title,
-      year: yearMatch ? Number(yearMatch[1]) : null,
-      price: meta.price ?? null,
-      priceExGovt: meta.priceExGovt ?? null,
-      odometer: meta.odometer ?? null,
-      transmission: meta.transmission ?? null,
-      fuelType: meta.fuelType ?? null,
-      bodyType: meta.bodyType ?? null,
-      engine: meta.engine ?? null,
-      seller: meta.seller ?? null,
-      location: meta.location ?? null,
-      state: meta.state ?? null,
-      priceBadge: meta.priceBadge ?? null,
-      image: meta.image ?? null,
+      year: base.year ?? (yearMatch ? Number(yearMatch[1]) : null),
+      price: base.price ?? htmlMeta.price ?? null,
+      priceExGovt: base.priceExGovt ?? htmlMeta.priceExGovt ?? null,
+      odometer: base.odometer ?? htmlMeta.odometer ?? null,
+      transmission: htmlMeta.transmission ?? null,
+      fuelType: htmlMeta.fuelType ?? null,
+      bodyType: base.bodyType ?? htmlMeta.bodyType ?? null,
+      engine: htmlMeta.engine ?? null,
+      seller: htmlMeta.seller ?? null,
+      location: htmlMeta.location ?? null,
+      state: htmlMeta.state ?? null,
+      priceBadge: htmlMeta.priceBadge ?? null,
+      image: base.image ?? htmlMeta.image ?? null,
     });
   }
   return cards;

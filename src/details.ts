@@ -25,6 +25,7 @@ export function parseDetails(html: string, id: string, url: string): ListingDeta
     .map((m) => m[1].trim())
     .filter(Boolean);
   for (const s of specs) {
+    if (s.startsWith('$')) continue; // price strings handled separately below
     const lower = s.toLowerCase();
     if (/km\b|\skm$/.test(lower) && /\d/.test(s)) details.odometer = Number(s.replace(/[^0-9]/g, ''));
     else if (lower.includes('auto') || lower.includes('manual') || lower.includes('cvt'))
@@ -81,5 +82,44 @@ export function parseDetails(html: string, id: string, url: string): ListingDeta
     if (st) details.state = st[1];
   }
 
+  // When the full detail page loads (not blocked), carsales embeds a schema.org
+  // Vehicle in JSON-LD with richer, reliable fields. Overlay them to fill any
+  // gaps left by the HTML heuristics above.
+  const ld = extractVehicleLd(html);
+  if (ld) {
+    if (ld.name && !details.title) details.title = String(ld.name);
+    const mileage = ld.mileageFromOdometer?.value;
+    if (mileage != null && !details.odometer) details.odometer = Number(mileage);
+    if (ld.offers?.price != null && !details.price) details.price = Number(ld.offers.price);
+    if (ld.offers?.priceSpecification?.priceExclGST != null && !details.priceExGovt)
+      details.priceExGovt = Number(ld.offers.priceSpecification.priceExclGST);
+    if (ld.bodyType && !details.bodyType) details.bodyType = String(ld.bodyType);
+    if (ld.vehicleTransmission && !details.transmission)
+      details.transmission = String(ld.vehicleTransmission);
+    if (ld.fuelType && !details.fuelType)
+      details.fuelType = typeof ld.fuelType === 'string' ? ld.fuelType : String(ld.fuelType.name);
+    if (ld.seller?.name && !details.seller) details.seller = String(ld.seller.name);
+    const ldImgs = Array.isArray(ld.image) ? ld.image : ld.image ? [ld.image] : [];
+    const urls = ldImgs.map((i: any) => (typeof i === 'string' ? i : i?.url)).filter(Boolean);
+    if (urls.length && !details.photos.length) details.photos = urls.slice(0, 12);
+  }
+
   return details;
+}
+
+function extractVehicleLd(html: string): any | null {
+  const ms = [...html.matchAll(/<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/g)];
+  for (const m of ms) {
+    try {
+      const d = JSON.parse(m[1]);
+      const graph = Array.isArray(d['@graph']) ? d['@graph'] : [d];
+      for (const x of graph) {
+        if (x && (x['@type'] === 'Vehicle' || x['@type'] === 'Car' || x['@type'] === 'Product'))
+          return x;
+      }
+    } catch {
+      // not JSON-LD; skip
+    }
+  }
+  return null;
 }

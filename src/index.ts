@@ -7,12 +7,16 @@ import {
   closeBrowser,
   fetchHtml,
   downloadImages,
+  setAuthCookies,
+  saveSession,
+  authCookieFile,
   ListingCard,
   Page,
 } from './browser.js';
 import { buildSearchUrl, SearchParams } from './url.js';
 import { parseDetails } from './details.js';
 import { searchCars } from './provider.js';
+import { computeDeal } from './deal.js';
 
 const server = new McpServer({
   name: 'carsales-mcp',
@@ -91,6 +95,11 @@ server.tool(
       .enum(['price_low', 'price_high', 'year_new', 'year_old', 'km_low'])
       .optional()
       .describe('Sort order (applied in-memory)'),
+    goodDealsOnly: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Only return listings flagged as GOOD/GREAT deals (uses carsales price badge + price/year/odometer)'),
     page: z.number().optional().default(1).describe('Results page number (1-based)'),
     limit: z.number().optional().default(25).describe('Max results to return'),
   },
@@ -99,10 +108,15 @@ server.tool(
     try {
       let cards = await searchCars(params as SearchParams);
       cards = applyPostFilters(cards, params as SearchParams);
+      const deals = new Map(cards.map((c) => [c.id, computeDeal(c)]));
+      if (params.goodDealsOnly) cards = cards.filter((c) => deals.get(c.id)!.isGoodDeal);
       cards = sortCards(cards, params.sort);
       const limited = cards.slice(0, params.limit ?? 25);
+      const goodCount = limited.filter((c) => deals.get(c.id)!.isGoodDeal).length;
       const text = limited
         .map((c, i) => {
+          const deal = deals.get(c.id)!;
+          const flag = deal.isGoodDeal ? `[${deal.label.toUpperCase()} DEAL] ` : '';
           const price = c.price ? `$${c.price.toLocaleString()}` : c.priceExGovt
             ? `$${c.priceExGovt.toLocaleString()} (ex gov't charges)`
             : 'n/a';
@@ -114,7 +128,8 @@ server.tool(
             c.odometer ? `${c.odometer.toLocaleString()} km` : null,
             c.seller,
           ].filter(Boolean);
-          return `${i + 1}. ${c.title}\n   ${price} | ${bits.join(' | ')}\n   ${c.url}`;
+          const dealLine = deal.isGoodDeal ? `\n   why: ${deal.reason}` : '';
+          return `${i + 1}. ${flag}${c.title}\n   ${price} | ${bits.join(' | ')}\n   ${c.url}${dealLine}`;
         })
         .join('\n');
       return {
@@ -122,7 +137,8 @@ server.tool(
           {
             type: 'text',
             text:
-              `Found ${cards.length} matching listing(s) on carsales.com.au (showing ${limited.length}).\n` +
+              `Found ${cards.length} matching listing(s) on carsales.com.au (showing ${limited.length})` +
+              `${goodCount ? `, ${goodCount} flagged as good deals` : ''}.\n` +
               `Search URL: ${url}\n\n${text || 'No listings matched.'}`,
           },
         ],
@@ -160,12 +176,17 @@ async function describeListing(
   const blocked = html.length < 6000 || html.toLowerCase().includes('captcha-delivery');
   if (!blocked) {
     const d = parseDetails(html, id, target);
+    const deal = computeDeal(d);
+    const dealLine = deal.isGoodDeal
+      ? `Deal: ${deal.label.toUpperCase()} (score ${deal.score}) — ${deal.reason}`
+      : `Deal: ${deal.label} (score ${deal.score}) — ${deal.reason}`;
     const lines = [
       d.title,
       d.year ? `Year: ${d.year}` : null,
       d.price ? `Price: $${d.price.toLocaleString()}` : null,
       d.priceExGovt ? `Price ex gov't charges: $${d.priceExGovt.toLocaleString()}` : null,
       d.priceBadge ? `Price indicator: ${d.priceBadge}` : null,
+      dealLine,
       d.odometer ? `Odometer: ${d.odometer.toLocaleString()} km` : null,
       d.transmission ? `Transmission: ${d.transmission}` : null,
       d.fuelType ? `Fuel: ${d.fuelType}` : null,
@@ -184,6 +205,7 @@ async function describeListing(
         price: d.price,
         priceExGovt: d.priceExGovt,
         priceBadge: d.priceBadge,
+        deal,
         year: d.year,
         odometer: d.odometer,
         transmission: d.transmission,
@@ -286,13 +308,17 @@ server.tool(
   },
   async ({ query, includeImages }) => {
     const cards = await searchCars({ keyword: query, limit: 20 } as SearchParams);
-    const results = cards.map((c) => ({
-      id: 'carsales:' + c.id,
-      title: c.title,
-      text: cardSummary(c),
-      url: c.url,
-      image: c.image,
-    }));
+    const results = cards.map((c) => {
+      const deal = computeDeal(c);
+      return {
+        id: 'carsales:' + c.id,
+        title: c.title,
+        text: (deal.isGoodDeal ? `[${deal.label.toUpperCase()} DEAL] ` : '') + cardSummary(c),
+        url: c.url,
+        image: c.image,
+        deal,
+      };
+    });
     const content: any[] = [{ type: 'text', text: JSON.stringify({ results }, null, 2) }];
     if (includeImages) {
       const page = await getPage();
@@ -337,6 +363,197 @@ server.tool(
         ...imgs,
       ],
     };
+  },
+);
+
+function resolveListingTarget(listingId?: string, url?: string): string | null {
+  if (url) return url;
+  if (listingId) return `https://www.carsales.com.au/cars/details/${listingId}/`;
+  return null;
+}
+
+server.tool(
+  'set_auth',
+  'Import a carsales.com.au login session by pasting cookies exported from your own ' +
+    'browser (so the server can save vehicles, make offers, and contact sellers). ' +
+    'Pass the cookies array from DevTools > Application > Cookies (or a cookie ' +
+    'export extension). Stored at: ' + authCookieFile() + '.',
+  {
+    cookies: z
+      .array(z.any())
+      .describe('Array of cookie objects (name, value, domain, path, ...). Typically from a browser cookie export.'),
+  },
+  async ({ cookies }) => {
+    try {
+      await setAuthCookies(cookies);
+    } catch (e) {
+      return { content: [{ type: 'text', text: 'Failed to save cookies: ' + (e as Error).message }] };
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Saved ${cookies.length} cookie(s) to ${authCookieFile()}. ` +
+            `The session will be used on subsequent requests. Re-run auth_status to confirm it works.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'auth_status',
+  'Check whether the current session is logged in to carsales.com.au (i.e. whether ' +
+    'authenticated actions like save_vehicle / make_offer will work).',
+  {},
+  async () => {
+    const page = await getPage();
+    const html = await fetchHtml('https://www.carsales.com.au/my-carsales/', page);
+    const loggedIn =
+      html.length >= 6000 &&
+      /(my account|sign out|log out|my carsales|saved (cars|vehicles)|watchlist)/i.test(html);
+    if (loggedIn) await saveSession();
+    return {
+      content: [
+        {
+          type: 'text',
+          text: loggedIn
+            ? 'Logged in to carsales.com.au. Authenticated actions are available.'
+            : 'Not logged in (or the account page was blocked). Use set_auth with cookies from your browser to enable saving/making offers.',
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'save_vehicle',
+  'Save/watchlist a carsales listing to your account (requires an authenticated session ' +
+    'via set_auth). Best-effort: clicks the Save/Watchlist control on the listing page.',
+  {
+    listingId: z.string().optional().describe('Listing id, e.g. OAG-AD-26099426'),
+    url: z.string().optional().describe('Full carsales listing URL'),
+  },
+  async ({ listingId, url }) => {
+    const target = resolveListingTarget(listingId, url);
+    if (!target) return { content: [{ type: 'text', text: 'Provide listingId or url.' }] };
+    const page = await getPage();
+    try {
+      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(2500);
+      const selectors = [
+        'button:has-text("Save")',
+        'a:has-text("Save this")',
+        '[data-testid*="save" i]',
+        'button[aria-label*="Save" i]',
+      ];
+      let clicked = false;
+      for (const sel of selectors) {
+        try {
+          const el = page.locator(sel).first();
+          if (await el.count()) {
+            await el.click({ timeout: 5000 });
+            clicked = true;
+            break;
+          }
+        } catch {
+          // try next selector
+        }
+      }
+      await saveSession();
+      return {
+        content: [
+          {
+            type: 'text',
+            text: clicked
+              ? `Clicked the Save control on ${target} (best-effort — confirm in your carsales account).`
+              : `Could not find a Save/Watchlist control on ${target}. The page may require login or its markup changed.`,
+          },
+        ],
+      };
+    } catch (e) {
+      return { content: [{ type: 'text', text: 'save_vehicle failed: ' + (e as Error).message }] };
+    }
+  },
+);
+
+server.tool(
+  'make_offer',
+  'Contact the seller / make an offer on a carsales listing (requires an authenticated ' +
+    'session via set_auth). Best-effort: opens the contact/enquire form and submits your message.',
+  {
+    listingId: z.string().optional().describe('Listing id, e.g. OAG-AD-26099426'),
+    url: z.string().optional().describe('Full carsales listing URL'),
+    message: z.string().describe('Message to send the seller'),
+    price: z.number().optional().describe('Optional offer price in AUD'),
+  },
+  async ({ listingId, url, message, price }) => {
+    const target = resolveListingTarget(listingId, url);
+    if (!target) return { content: [{ type: 'text', text: 'Provide listingId or url.' }] };
+    const page = await getPage();
+    try {
+      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(2500);
+      const openSelectors = [
+        'button:has-text("Make an offer")',
+        'button:has-text("Contact seller")',
+        'button:has-text("Enquire")',
+        'a:has-text("Make an offer")',
+      ];
+      let opened = false;
+      for (const sel of openSelectors) {
+        try {
+          const el = page.locator(sel).first();
+          if (await el.count()) {
+            await el.click({ timeout: 5000 });
+            opened = true;
+            break;
+          }
+        } catch {
+          // try next
+        }
+      }
+      if (!opened) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Could not find a Make-an-offer / Contact-seller control on ${target}. The page may require login or its markup changed.`,
+            },
+          ],
+        };
+      }
+      await page.waitForTimeout(1500);
+      const textSel = page.locator('textarea, input[type="text"]').first();
+      if (await textSel.count()) {
+        const full = price != null ? `Offer: $${price.toLocaleString()}\n${message}` : message;
+        await textSel.fill(full);
+      }
+      const submitSel = page.locator('button:has-text("Send"), button:has-text("Submit"), button[type="submit"]').first();
+      let sent = false;
+      if (await submitSel.count()) {
+        try {
+          await submitSel.click({ timeout: 5000 });
+          sent = true;
+        } catch {
+          // submission may need further steps
+        }
+      }
+      await saveSession();
+      return {
+        content: [
+          {
+            type: 'text',
+            text: sent
+              ? `Submitted your message to the seller for ${target} (best-effort — confirm in your account/outbox).`
+              : `Opened the contact form for ${target} and filled your message, but could not click a Send/Submit button (markup may differ).`,
+          },
+        ],
+      };
+    } catch (e) {
+      return { content: [{ type: 'text', text: 'make_offer failed: ' + (e as Error).message }] };
+    }
   },
 );
 
