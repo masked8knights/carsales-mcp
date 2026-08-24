@@ -6,6 +6,7 @@ import {
   getPage,
   closeBrowser,
   fetchHtml,
+  downloadImages,
   ListingCard,
   Page,
 } from './browser.js';
@@ -150,7 +151,8 @@ function cardSummary(c: ListingCard): string {
 async function describeListing(
   listingId: string | undefined,
   target: string,
-): Promise<{ id: string; title: string | null; text: string; url: string; metadata: Record<string, unknown>; blocked: boolean }> {
+  includeImages = false,
+): Promise<{ id: string; title: string | null; text: string; url: string; metadata: Record<string, unknown>; blocked: boolean; imageUrls: string[] }> {
   const idMatch = target.match(/([A-Z]{3,4}-AD-\d+)/);
   const id = idMatch ? idMatch[1] : listingId || 'unknown';
   const page = await getPage();
@@ -190,9 +192,11 @@ async function describeListing(
         engine: d.engine,
         seller: d.seller,
         state: d.state,
+        features: d.features,
         photos: d.photos?.length || 0,
       },
       blocked: false,
+      imageUrls: includeImages ? d.photos || [] : [],
     };
   }
   // Fallback: recover summary card data via search.
@@ -224,6 +228,7 @@ async function describeListing(
         state: card.state,
       },
       blocked: true,
+      imageUrls: includeImages && card.image ? [card.image] : [],
     };
   }
   return {
@@ -233,6 +238,7 @@ async function describeListing(
     url: target,
     metadata: {},
     blocked: true,
+    imageUrls: [],
   };
 }
 
@@ -247,15 +253,22 @@ server.tool(
       .optional()
       .describe('Listing id from search results, e.g. OAG-AD-26099426'),
     url: z.string().optional().describe('Full carsales listing URL'),
+    includeImages: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe('Download listing photos and return them as image blocks so the model can see them'),
   },
-  async ({ listingId, url }) => {
+  async ({ listingId, url, includeImages }) => {
     let target = url;
     if (!target && listingId) {
       target = `https://www.carsales.com.au/cars/details/${listingId}/`;
     }
     if (!target) return { content: [{ type: 'text', text: 'Provide listingId or url.' }] };
-    const d = await describeListing(listingId, target);
-    return { content: [{ type: 'text', text: d.text + `\n\nURL: ${d.url}` }] };
+    const d = await describeListing(listingId, target, includeImages);
+    const page = await getPage();
+    const imgs = includeImages ? await downloadImages(page, d.imageUrls, 8) : [];
+    return { content: [{ type: 'text', text: d.text + `\n\nURL: ${d.url}` }, ...imgs] };
   },
 );
 
@@ -263,18 +276,29 @@ server.tool(
   'search',
   'Deep-research search across carsales.com.au. Returns { results: [{ id, title, text, url }] } ' +
     'where id is "carsales:<listingId>" (pass to fetch). Mirrors the ChatGPT Deep Research tool contract.',
-  { query: z.string().describe('Free-text search, e.g. "toyota camry victoria under 30000"') },
-  async ({ query }) => {
+  {
+    query: z.string().describe('Free-text search, e.g. "toyota camry victoria under 30000"'),
+    includeImages: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Also return each listing’s photo as an image block so the model can see them'),
+  },
+  async ({ query, includeImages }) => {
     const cards = await searchCars({ keyword: query, limit: 20 } as SearchParams);
     const results = cards.map((c) => ({
       id: 'carsales:' + c.id,
       title: c.title,
       text: cardSummary(c),
       url: c.url,
+      image: c.image,
     }));
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ results }, null, 2) }],
-    };
+    const content: any[] = [{ type: 'text', text: JSON.stringify({ results }, null, 2) }];
+    if (includeImages) {
+      const page = await getPage();
+      for (const c of cards) if (c.image) content.push(...(await downloadImages(page, [c.image], 1)));
+    }
+    return { content };
   },
 );
 
@@ -282,15 +306,24 @@ server.tool(
   'fetch',
   'Deep-research fetch: full details for a search-result id (e.g. "carsales:OAG-AD-26099426") ' +
     'or a listing URL. Returns { id, title, text, url, metadata }. Mirrors the ChatGPT Deep Research tool contract.',
-  { id: z.string().describe('Listing id from search() (with carsales: prefix) or a full URL') },
-  async ({ id }) => {
+  {
+    id: z.string().describe('Listing id from search() (with carsales: prefix) or a full URL'),
+    includeImages: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe('Download listing photos and return them as image blocks so the model can see them'),
+  },
+  async ({ id, includeImages }) => {
     const realId = id.replace(/^carsales:/, '');
     let target: string;
     if (/^https?:\/\//.test(realId)) target = realId;
     else if (/^[A-Z]{3,4}-AD-/.test(realId) || /\//.test(realId))
       target = `https://www.carsales.com.au/cars/details/${realId}/`;
     else target = realId;
-    const d = await describeListing(undefined, target);
+    const d = await describeListing(undefined, target, includeImages);
+    const page = await getPage();
+    const imgs = includeImages ? await downloadImages(page, d.imageUrls, 8) : [];
     return {
       content: [
         {
@@ -301,6 +334,7 @@ server.tool(
             2,
           ),
         },
+        ...imgs,
       ],
     };
   },

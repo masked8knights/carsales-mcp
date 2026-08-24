@@ -42,6 +42,15 @@ year / odometer are filtered in-memory from the listing cards (these have no sim
 Get full details for one listing by `listingId` (e.g. `OAG-AD-26099426`) or full `url`.
 Falls back to summary card data if the detail page is bot-blocked.
 
+**Holistic view.** The tools surface the full listing picture for the model:
+- `get_listing_details` / `fetch` return the price (drive-away **and** ex-govt-charges), price
+  indicator (FAIR/GOOD/GOOD/ GREAT PRICE), year, odometer, transmission, fuel, body, engine,
+  seller + state, the **feature/spec bullet list**, the description, and the **photo gallery**.
+- Set `includeImages: true` (default for `get_listing_details`/`fetch`) and the actual photos are
+  downloaded and returned as MCP **image blocks**, so a multimodal model can literally *see* the
+  car. `search` has `includeImages` too (off by default) to attach each result's thumbnail.
+- `search` returns each result's `image` URL in its JSON even when images aren't embedded.
+
 ## Setup
 
 ### 1. Install Playwright's browser

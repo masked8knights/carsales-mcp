@@ -285,3 +285,29 @@ export async function closeBrowser(): Promise<void> {
     sharedPage = null;
   }
 }
+
+/**
+ * Download listing images through the browser's network context (so proxy/DNS
+ * settings apply) and return MCP image content blocks with base64 data, so a
+ * multimodal model can actually *see* the photos.
+ */
+export async function downloadImages(
+  page: Page,
+  urls: string[],
+  max: number,
+): Promise<Array<{ type: 'image'; data: string; mimeType: string }>> {
+  const blocks: Array<{ type: 'image'; data: string; mimeType: string }> = [];
+  for (const u of urls.slice(0, max)) {
+    try {
+      const resp = await page.request.get(u, { timeout: 15000 });
+      if (!resp.ok()) continue;
+      const buf = Buffer.from(await resp.body());
+      if (!buf.length) continue;
+      const ct = (resp.headers()['content-type'] || 'image/jpeg').split(';')[0];
+      blocks.push({ type: 'image', data: buf.toString('base64'), mimeType: ct });
+    } catch {
+      // skip undownloadable image
+    }
+  }
+  return blocks;
+}

@@ -63,6 +63,16 @@ export function parseDetails(html: string, id: string, url: string): ListingDeta
     if (p) details.description = p[1].trim();
   }
 
+  // Features / specification bullet list (best effort).
+  const featSection = html.match(/features?<\/h\d>([\s\S]*?)(?:<h\d|<\/section)/i);
+  if (featSection) {
+    details.features = [
+      ...featSection[1].matchAll(/<li[^>]*>\s*([^<]+)\s*<\/li>/g),
+    ]
+      .map((m) => m[1].trim())
+      .filter(Boolean);
+  }
+
   // Dealer / seller
   const sell = html.match(/data-testid="seller-section"[^>]*>\s*<span[^>]*>([^<]+)</);
   if (sell) {
