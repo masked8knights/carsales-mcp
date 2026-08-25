@@ -82,6 +82,27 @@ Reputation check. Scrapes a carsales dealer star rating and review count (best-e
 Gumtree are mostly private sellers with no dealer rating, so it flags that and reminds you to verify
 the individual listing. Check before contacting anyone.
 
+### `vehicle_review`
+One-call buyer review of a listing: real photos (returned as image blocks for the vision model) plus a
+reliability/reputation assessment and a comparison to both the market average (free comparables) and the
+new-car price. Bundles `get_listing_details` + `assessListingReliability` + `price_insight` +
+compare-to-new, so a multimodal model can see the car and judge value and trust in one call.
+
+### Learning (local, no service)
+The server learns the buyer's preferences in a local file (`~/.carsales-mcp/prefs.json`) and applies
+them to searches automatically:
+- `remember_preference` with `kind: filter` saves a default (e.g. `maxPrice=4000`, `transmission=auto`);
+  `like`/`avoid` record a rule ("no rust", "a couple of dents is fine") and `reject` records a specific
+  car the user said no to. Always pass the user's `reason` - that is the learning.
+- `get_preferences` / `clear_preferences` read / reset them.
+- When a buyer turns a car down, ask why and call `remember_preference{kind: reject, ...}` so that car
+  is excluded from future searches and the preference is remembered.
+
+### Reliability
+`assessListingReliability` (used by `vehicle_review`) rates a car HIGH/MEDIUM/LOW from a transparent,
+editable make/model dataset, adjusted by real market signals from the listing (odometer-for-age use and
+carsales' own price indicator). It is a heuristic to guide a human, never a guarantee.
+
 ### Good deals
 Every tool attaches a deal assessment to each listing, and `search_cars` can filter to bargains with
 `goodDealsOnly: true`. The score combines carsales' own price badge (the primary market-data signal),
@@ -130,19 +151,19 @@ Each has a lean `SKILL.md` that loads chapter files on demand, keeping context s
 ## Setup
 
 ### 1. Install
-The default engine is Camoufox (a Firefox-based anti-detect browser). Its binary downloads
-automatically on first launch, so for the default setup you only need:
+The default engine is **Camoufox** (an anti-detect, C++-patched Firefox that spoofs `navigator.webdriver`,
+WebGL, hardware concurrency, AudioContext and WebRTC). Because bot-protection is largely
+fingerprint-based, Camoufox passes Cloudflare's Gumtree block and is much harder for DataDome to
+fingerprint than vanilla Chromium. Install it (and the fallback Chromium) once:
 
 ```bash
+npx playwright install chromium
+npx camoufox-js fetch
 npm install -g carsales-mcp
 # then run via your MCP client, e.g. npx -y carsales-mcp
 ```
 
-Camoufox needs some system libraries on Linux. If launch fails, install them once:
-`npx playwright install-deps chromium` (or your distro's equivalents of libnss3, libnspr4, libasound2).
-
-You only need the full Chromium build (`npx playwright install chromium`) if you switch the engine
-with `CARS_ENGINE=chromium` (for example to use the optional Buster CAPTCHA solver).
+If Camoufox fails to launch on Linux, install its system libraries: `npx playwright install-deps chromium`.
 
 ### 2. Add to your MCP client
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`), **Claude
@@ -160,29 +181,32 @@ Code** (`~/.claude/.mcp.json`), or **opencode** (`opencode.jsonc` / `~/.config/o
 ```
 
 ### 3. Optional tuning
-carsales.com.au is behind DataDome. The server survives this with a 3-tier engine fallback:
-1. `joinc` (default): the Camoufox build from jo-inc, the hardest-to-fingerprint option.
-2. `camoufox`: the camoufox-js packaged stable build.
-3. `chromium`: a hardened Chromium with automation flags stripped and `--no-sandbox`.
+carsales.com.au is behind DataDome. The server uses a clean 2-tier engine:
+1. `camoufox` (default): the anti-detect Firefox build, the hardest to fingerprint.
+2. `chromium`: a hardened Chromium with automation flags stripped and `--no-sandbox`; the reliable
+   fallback. The browser auto-recovers if a page/context/browser dies mid-run.
 
-If a tier fails to launch, the server drops to the next one, always ending at Chromium. Force a tier
-with `CARS_ENGINE=joinc|camoufox|chromium`, or point Camoufox at a specific binary with
-`CARS_CAMOUFOX_BINARY=/path/to/camoufox`.
+If the default fails to launch, the server drops to Chromium. Force an engine with
+`CARS_ENGINE=camoufox|chromium|joinc`, or point Camoufox at a specific binary with
+`CARS_CAMOUFOX_BINARY=/path/to/camoufox`. (`joinc`, the jo-inc build, is opt-in and least stable.)
 
 The browser's User-Agent matches its engine (Firefox UA on Camoufox, Chrome UA on Chromium). This is a
 fingerprint fix, because a mismatched UA is a classic bot tell. `navigator.webdriver` is stripped and
-locale or timezone is set to `en-AU` / `Australia/Sydney`.
+locale or timezone is set to `en-AU` / `Australia/Sydney`. Traversal is humanized by default
+(`CARS_HUMANIZE=1`): random jittered gaps + light scrolling instead of fixed-interval navigation.
 
 If you have a Carapis API key, set `CARAPIS_API_KEY` and `search_cars` will pull clean structured JSON
 from their carsales endpoint instead of scraping. If the key is absent or the call fails, it falls
 back to the browser. This is the official-API-where-possible, scrape-where-not strategy.
 
 Proxy: DataDome blocks primarily by IP reputation, so a residential proxy is the most reliable fix.
-Set `CARS_PROXY` to a single proxy or a comma-separated list rotated per request.
+Set `CARS_PROXY` to a single proxy or a comma-separated list rotated per request. A working residential
+proxy usually restores the photo gallery and detail pages when the IP is challenged.
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `CARS_ENGINE` | `joinc` | Engine tier: `joinc` then `camoufox` then `chromium` |
+| `CARS_ENGINE` | `camoufox` | Engine: `camoufox` (default, anti-detect) then `chromium` fallback. `joinc` is opt-in |
+| `CARS_DEEP_PAGES` | `6` | Extra result pages to scan when a price filter is set and page 1 is too sparse |
 | `CARS_CAMOUFOX_BINARY` | – | Path to a specific Camoufox binary |
 | `CAMOUFOX_INSTALL_DIR` | `~/.cache/camoufox` | Where the Camoufox binary is stored |
 | `CARAPIS_API_KEY` | – | Use the Carapis REST API for search instead of scraping |
@@ -195,25 +219,49 @@ Set `CARS_PROXY` to a single proxy or a comma-separated list rotated per request
 | `CARS_OFFER_COOLDOWN_HOURS` | `24` | `make_offer` refuses re-contact to the same listing within this window |
 | `CARS_OFFERS_FILE` | `~/.carsales-mcp/sent-offers.json` | Append-only log that enforces never sending the same offer twice |
 | `CARS_MIN_DELAY` | `1500` | Minimum ms between navigations (be polite) |
+| `CARS_HUMANIZE` | `1` | Human-like traversal (random jitter + scroll/pause). Set `0` to disable |
 | `CARS_RETRIES` | `3` | Retry attempts when a DataDome challenge is hit |
 | `CARS_BACKOFF` | `2000` | Backoff ms between retries (doubles each try) |
 | `CARS_SELFTEST_DIR` | `~/.carsales-mcp/selftest` | Where `scripts/selftest.mjs` saves fixtures |
 
 ## Anti-blocking: what we have and what we do not
-We have (all FOSS): the 3-tier engine fallback, a correct fingerprint (matching UA, stripped
-`navigator.webdriver`, en-AU locale and timezone), proxy rotation, politeness and retries, and
-graceful degradation (a blocked or 403 page returns fewer or zero results, never a crash).
+We have (all FOSS): the anti-detect Camoufox engine (default) with a single Chromium fallback, a
+correct fingerprint (matching UA, stripped `navigator.webdriver`, en-AU locale and timezone), humanized
+traversal, proxy rotation, politeness and retries, and graceful degradation (a blocked or 403 page
+returns fewer or zero results, never a crash).
+
+**Blocks are reported, not hidden.** carsales uses DataDome, which challenges search pages after many
+requests from one IP. On a challenge the tools no longer silently return "0 cars" (which made clients
+think there were no listings and loop) - they return a clear "DataDome bot-protection challenge"
+message telling you to wait, reduce page depth, or use a residential proxy.
+
+**Detail pages reached by a real click are allowed.** carsales 403s a *direct* navigation to a listing
+detail page, but loads it when you click through from the results. The server does that automatically
+(`get_listing_details`, `compare_listings`, `check_watch`), so photos and the full description are
+retrieved via the natural user flow. It still helps to keep `search_cars` polite (modest `limit` and
+page depth).
+
+**The one reliable long-term fix is a residential proxy.** DataDome blocks by IP reputation. Set
+`CARS_PROXY` to a single proxy or a comma-separated list (rotated per request) to keep any one IP from
+being flagged. With a clean residential proxy, search and the click-through detail full gallery settle
+into reliable operation. High-volume scraping (deep page scans, many detail fetches) over one IP will
+eventually be challenged no matter what - slow it down or proxy it.
 
 We deliberately do not have a paid CAPTCHA solver. Solving DataDome via 2captcha or Anti-Captcha
 conflicts with the 100% FOSS goal. Our strategy is avoidance: a clean residential IP, Camoufox and a
-proxy. As an opt-in, we wire the FOSS Buster extension (`CARS_CAPTCHA_SOLVER=buster`, MIT-licensed,
-solves hCaptcha and reCAPTCHA audio challenges locally via the browser's speech recognition, no paid
-service). Caveats: it only works on the Chromium engine, it needs you to point `CARS_BUSTER_EXTENSION`
-at your installed copy, and it does not defeat behavioural bot-protection like DataDome. If a CAPTCHA
-appears and no solver is configured, the tool reports it and stops. Verify manually in your browser.
+proxy. We considered third-party CAPTCHA MCP servers (CapSkip, CaptchaSonic) - they solve
+reCAPTCHA/Cloudflare Turnstile/GeeTest, but **not DataDome** (the system carsales.com.au uses), they are
+not fully FOSS (CaptchaSonic is pay-per-solve; CapSkip needs a licensed desktop app), and they add a
+separate heavy dependency, so we did not adopt them. As an opt-in, we wire the FOSS Buster extension
+(`CARS_CAPTCHA_SOLVER=buster`, MIT-licensed, solves hCaptcha and reCAPTCHA audio challenges locally via
+the browser's speech recognition, no paid service). Caveats: it only works on the Chromium engine, it
+needs you to point `CARS_BUSTER_EXTENSION` at your installed copy, and it does not defeat behavioural
+bot-protection like DataDome. If a CAPTCHA appears and no solver is configured, the tool reports it and
+stops. Verify manually in your browser.
 
 ## Notes and limits
-- DataDome may occasionally challenge. If a search returns nothing, retry.
+- DataDome may challenge after many requests from one IP. If the search reports a DataDome challenge
+  (not "0 cars"), wait a few minutes, reduce page depth, or set a residential `CARS_PROXY`.
 - Respect carsales' terms of service and avoid hammering with very high page counts.
 - No official carsales API is used. This scrapes the public site via a real browser.
 - The server reuses one browser page and closes it on exit, so resource use stays low. Token use is

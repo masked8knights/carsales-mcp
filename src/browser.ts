@@ -11,9 +11,18 @@ export type { Browser, BrowserContext };
 // (https://github.com/jo-inc/camofox-browser), the hardest-to-fingerprint
 // option. If it fails to launch we fall back to the camoufox-js packaged
 // stable build, and finally to a hardened Chromium. Set CARS_ENGINE to pin a
-// tier: 'joinc' (default) | 'camoufox' | 'chromium'.
+// tier: 'camoufox' (default) | 'chromium' | 'joinc'.
 type Engine = 'joinc' | 'camoufox' | 'chromium';
-const ENGINE_RAW = (process.env.CARS_ENGINE || 'joinc').toLowerCase();
+/**
+ * Default engine. We default to the anti-detect Camoufox engine (Camoufox-js,
+ * a C++-patched Firefox that spoofs navigator.webdriver, WebGL, hardware
+ * concurrency, AudioContext, WebRTC) because bot-protection (Cloudflare,
+ * DataDome) is largely fingerprint-based: Gumtree's Cloudflare block, for
+ * example, is passed by Camoufox but not by vanilla Chromium. Chromium is kept
+ * as a single, reliable fallback (the browser auto-recovers if Camoufox drops).
+ * Set CARS_ENGINE to pin one.
+ */
+const ENGINE_RAW = (process.env.CARS_ENGINE || 'camoufox').toLowerCase();
 const ENGINE: Engine =
   ENGINE_RAW === 'chromium' ? 'chromium' : ENGINE_RAW === 'camoufox' ? 'camoufox' : 'joinc';
 
@@ -70,6 +79,36 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Human-like pacing. DataDome scores behaviour, so a robot that navigates at a
+// perfectly fixed interval is easy to catch. We add random jitter to every wait
+// and lightly "read" each page (scroll, pause) rather than snapping from one
+// navigation to the next.
+const HUMANIZE = (process.env.CARS_HUMANIZE || '1') !== '0';
+
+function rand(min: number, max: number): number {
+  return Math.floor(min + Math.random() * (max - min));
+}
+
+function humanPause(minMs: number, maxMs: number): Promise<void> {
+  return sleep(rand(minMs, maxMs)) as Promise<void>;
+}
+
+/** Simulate a human lightly scanning the page: a short pause and a small scroll. */
+async function humanizePage(page: Page, isResults: boolean): Promise<void> {
+  if (!HUMANIZE) return;
+  try {
+    await humanPause(1200, 3200);
+    if (isResults) {
+      // A reader scrolls the grid a little rather than reading the top only.
+      await page.evaluate(() => window.scrollBy(0, rand(200, 900))).catch(() => {});
+      await humanPause(600, 1600);
+      await page.evaluate(() => window.scrollBy(0, rand(-300, 300))).catch(() => {});
+    }
+  } catch {
+    // best-effort, never let humanizing break a fetch
+  }
+}
+
 function pickProxy(): { server: string; bypass: string } | undefined {
   if (!PROXY_LIST.length) return undefined;
   const server = PROXY_LIST[Math.floor(Math.random() * PROXY_LIST.length)];
@@ -118,9 +157,9 @@ async function launchChromium(): Promise<Browser> {
   return chromium.launch({ channel: 'chromium', args });
 }
 
-// Ordered fallback chain. Default (joinc) tries the jo-inc Camoufox build first,
-// then the camoufox-js stable build, then hardened Chromium. Other ENGINE values
-// shorten the chain but always end in the Chromium fallback.
+// Ordered fallback chain. Default is Camoufox (best anti-fingerprint engine) →
+// hardened Chromium as the reliable fallback. The jo-inc build ('joinc') is kept
+// only as an explicit opt-in: it is the hardest to fingerprint but least stable.
 function engineOrder(): Engine[] {
   if (ENGINE === 'chromium') return ['chromium'];
   if (ENGINE === 'camoufox') return ['camoufox', 'chromium'];
@@ -128,7 +167,17 @@ function engineOrder(): Engine[] {
 }
 
 async function getBrowser(): Promise<Browser> {
-  if (browser) return browser;
+  // A crashed / disconnected browser must be relaunched, never reused. Without
+  // this check, the singleton caches a dead browser and every later call fails,
+  // which surfaced as a harmless-looking "session stuck in a loop".
+  if (browser && browser.isConnected()) return browser;
+  if (browser) {
+    console.error('[carsales-mcp] Browser disconnected; relaunching.');
+    sharedContext = null;
+    sharedPage = null;
+    await browser.close().catch(() => {});
+    browser = null;
+  }
   for (const step of engineOrder()) {
     try {
       if (step === 'chromium') {
@@ -194,13 +243,40 @@ export async function getPage(): Promise<Page> {
     // Rotate proxy per request.
     return newPageWithProxy();
   }
-  if (!sharedContext) {
+  // Transparently recover from a browser / context / page that died mid-run
+  // (Chromium and Camoufox can both drop the page after many navigations). The
+  // old code reused the dead shared page, so every subsequent call errored with
+  // "Target page, context or browser has been closed" and the client retried in a
+  // loop. Rebuild on demand instead of returning a corpse.
+  if (browser && !browser.isConnected()) {
+    console.error('[carsales-mcp] Shared browser died; resetting.');
+    browser = null;
+    sharedContext = null;
+    sharedPage = null;
+  }
+  try {
+    if (!sharedContext) sharedContext = await newContext();
+    if (!sharedPage || sharedPage.isClosed()) sharedPage = await sharedContext.newPage();
+    return sharedPage;
+  } catch (e) {
+    console.error(
+      '[carsales-mcp] Recovering from unusable page/context:',
+      (e as Error).message.split('\n')[0],
+    );
+    try {
+      await sharedContext?.close().catch(() => {});
+    } catch {
+      // already closed
+    }
+    sharedContext = null;
+    sharedPage = null;
+    if (browser && !browser.isConnected()) {
+      browser = null;
+    }
     sharedContext = await newContext();
-  }
-  if (!sharedPage || sharedPage.isClosed()) {
     sharedPage = await sharedContext.newPage();
+    return sharedPage;
   }
-  return sharedPage;
 }
 
 export async function currentContext(): Promise<BrowserContext | null> {
@@ -246,8 +322,22 @@ export function authCookieFile(): string {
   return COOKIE_FILE;
 }
 
-function isBlocked(html: string): boolean {
-  return html.length < 6000 || html.toLowerCase().includes('captcha-delivery');
+/** True when a page is a DataDome / bot-protection challenge, not real content. */
+export function isBlocked(html: string): boolean {
+  return html.length < 6000 || html.toLowerCase().includes('captcha-delivery') || /geo\.captcha/i.test(html);
+}
+
+/**
+ * Thrown when carsales serves a bot-protection challenge instead of results. We
+ * surface this distinctly so the client can report "blocked, retry or use a
+ * proxy" rather than silently returning zero listings (which previously made the
+ * AI conclude there were no cars and loop).
+ */
+export class DataDomeBlockedError extends Error {
+  constructor(message = 'carsales.com.au served a DataDome bot-protection challenge for this request.') {
+    super(message);
+    this.name = 'DataDomeBlockedError';
+  }
 }
 
 /**
@@ -278,30 +368,50 @@ export async function solveCaptchaIfPresent(page: Page): Promise<boolean> {
   }
 }
 
-async function navigate(page: Page, url: string): Promise<string> {
+async function navigate(_page: Page, url: string): Promise<string> {
   let lastHtml = '';
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const elapsed = Date.now() - lastNav;
-    if (elapsed < MIN_DELAY) await sleep(MIN_DELAY - elapsed);
+    // Jittered, human-ish gap between navigations instead of a fixed interval.
+    const gap = HUMANIZE ? rand(MIN_DELAY, MIN_DELAY + 2600) : MIN_DELAY;
+    if (elapsed < gap) await sleep(gap - elapsed);
     lastNav = Date.now();
+
+    // Re-acquire a live page on every attempt. If the previous page/context/browser
+    // died mid-run, getPage() transparently relaunches it, instead of reusing the
+    // corpse (which previously surfaced as an endless "browser has been closed"
+    // retry loop after ~16 navigations).
+    let page: Page;
+    try {
+      page = await getPage();
+    } catch {
+      break; // could not obtain any browser page
+    }
+
+    let got = false;
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(2500);
+      await humanizePage(page, !/\/cars\/details\//.test(url));
+      lastHtml = await page.content();
+      got = true;
     } catch {
-      // navigation may throw on challenge; still inspect content
+      // Page/context/browser closed mid-navigation: drop it so getPage() rebuilds.
+      sharedPage = null;
+      lastHtml = '';
     }
-    await page.waitForTimeout(2500);
-    lastHtml = await page.content();
-    if (!isBlocked(lastHtml)) return lastHtml;
+    if (got && !isBlocked(lastHtml)) return lastHtml;
     // Blocked: try the FOSS CAPTCHA solver, then re-navigate to fetch the real page.
-    if (CAPTCHA_SOLVER === 'buster') {
+    if (CAPTCHA_SOLVER === 'buster' && got) {
       const solved = await solveCaptchaIfPresent(page);
       if (solved) {
         try {
           await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         } catch {
-          // challenge may have already redirected; fall through to content check
+          sharedPage = null;
         }
         await page.waitForTimeout(2500);
+        await humanizePage(page, !/\/cars\/details\//.test(url));
         lastHtml = await page.content();
         if (!isBlocked(lastHtml)) return lastHtml;
       }
@@ -345,6 +455,10 @@ export interface ListingCard {
   state: string | null;
   priceBadge: string | null;
   image: string | null;
+  /** All photo URLs for the listing (the search page's JSON-LD exposes an image
+   * array, not just the first thumbnail). Lets us return a real photo gallery
+   * even when the full detail page is bot-blocked. */
+  images?: string[];
 }
 
 export function num(s: string | null | undefined): number | null {
@@ -391,11 +505,17 @@ function cardFromJsonLd(item: any): Partial<ListingCard> {
   const name: string = item.name || '';
   const yearM = name.match(/^(\d{4})/);
   const mileage = item.mileageFromOdometer?.value;
-  const img = Array.isArray(item.image) && item.image[0]?.url
-    ? item.image[0].url
-    : typeof item.image === 'string'
-      ? item.image
-      : null;
+  // The JSON-LD `image` is usually an array of ImageObject (or strings): the full
+  // photo gallery, not just the first thumbnail.
+  const images: string[] = [];
+  const iv: any = item.image;
+  if (Array.isArray(iv)) {
+    for (const i of iv) {
+      const u = typeof i === 'string' ? i : i?.url;
+      if (u) images.push(u);
+    }
+  } else if (typeof iv === 'string') images.push(iv);
+  else if (iv?.url) images.push(iv.url);
   return {
     id: idFromUrl(url) || '',
     url: url.startsWith('http') ? url : 'https://www.carsales.com.au' + url,
@@ -404,7 +524,8 @@ function cardFromJsonLd(item: any): Partial<ListingCard> {
     price: item.offers?.price != null ? Number(item.offers.price) : null,
     odometer: mileage != null ? Number(mileage) : null,
     bodyType: item.bodyType || null,
-    image: img,
+    image: images[0] ?? null,
+    images: images.slice(0, 10),
   };
 }
 
@@ -504,20 +625,73 @@ export function parseListings(html: string): ListingCard[] {
   return cards;
 }
 
-export async function fetchSearchHtml(url: string, page: Page): Promise<string> {
-  const html = await navigate(page, url);
+export async function fetchSearchHtml(url: string, _page: Page): Promise<string> {
+  const html = await navigate(_page, url);
   if (!isBlocked(html)) {
     try {
-      await page.waitForSelector('a[aria-label="View details"]', { timeout: 15000 });
-    } catch {}
-    await page.waitForTimeout(1500);
-    return page.content();
+      // Re-acquire the live page (navigate may have rebuilt it after a crash).
+      const page = await getPage();
+      await page.waitForSelector('a[aria-label="View details"]', { timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+      return page.content();
+    } catch {
+      return html;
+    }
   }
   return html;
 }
 
 export async function fetchHtml(url: string, page: Page): Promise<string> {
+  // carsales detail pages are guarded by DataDome, which 403s a direct navigation
+  // but allows the page when reached by clicking through from the results page
+  // (a real user flow). So for detail URLs we try the direct nav first and, if it
+  // is challenged, re-acquire the listing by clicking it out of a live search.
+  if (/carsales\.com\.au\/cars\/details\//.test(url)) {
+    const direct = await navigate(page, url);
+    if (!isBlocked(direct)) return direct;
+    const viaClick = await clickThroughDetail(page, url);
+    if (viaClick && !isBlocked(viaClick)) return viaClick;
+    return direct;
+  }
   return navigate(page, url);
+}
+
+// DataDome lets listing detail pages through when they are reached by a real
+// click from the results grid. This fetches the results that contain the listing
+// and clicks its anchor, returning the fully loaded detail HTML. Returns '' if
+// the listing can't be located.
+async function clickThroughDetail(page: Page, url: string): Promise<string> {
+  const m = url.match(/\/cars\/details\/([^/]+)\/([A-Z]{3,4}-AD-\d+)\//);
+  if (!m) return '';
+  const slug = m[1];
+  const id = m[2];
+  const parts = slug.split('-');
+  const yearIdx = /^\d{4}$/.test(parts[0]) ? 0 : -1;
+  const make = parts[yearIdx + 1] || '';
+  const model = parts[yearIdx + 2] || '';
+  if (!make) return '';
+  const base = `https://www.carsales.com.au/cars/used/${make}${model ? '/' + model : ''}/?sort=Odometer`;
+  for (let p = 1; p <= 8; p++) {
+    const searchUrl = p > 1 ? `${base}&page=${p}` : base;
+    const html = await navigate(page, searchUrl);
+    if (isBlocked(html)) continue;
+    try {
+      const anchor = page.locator(`a[href*="${id}"]`).first();
+      if (await anchor.count()) {
+        // Human-like: scroll the listing into view, pause, then click.
+        await anchor.scrollIntoViewIfNeeded().catch(() => {});
+        await humanPause(700, 1800);
+        await anchor.click({ timeout: 15000 }).catch(async () => {
+          await anchor.click({ timeout: 15000, force: true }).catch(() => {});
+        });
+        await humanPause(2500, 5500);
+        return page.content();
+      }
+    } catch {
+      // try the next results page
+    }
+  }
+  return '';
 }
 
 /**

@@ -23,41 +23,47 @@ export interface GumtreeSearchParams {
   radius?: number;
 }
 
-function idFromGumtreeUrl(u: string): string | null {
-  const m = u.match(/\/(\d{6,})(?:\?|$)/);
-  return m ? m[1] : null;
-}
-
 export function parseGumtree(html: string, limit: number): ListingCard[] {
   const cards: ListingCard[] = [];
   const seen = new Set<string>();
 
-  // Gumtree embeds listing data as JSON: each listing has a `"url"` of the form
-  // …/web/listing/…/<id>. We pair each URL with the nearest *preceding* `"title"`
-  // (so the site title doesn't get mis-associated with the first listing).
-  const urlRe = /"url":"(https:\/\/www\.gumtree\.com\.au\/web\/listing\/[^"]+)"/g;
-  const titleRe = /"title":"([^"]{5,60})"/g;
-  let um: RegExpExecArray | null;
-  while ((um = urlRe.exec(html)) && cards.length < limit) {
-    const url = um[1];
-    const id = idFromGumtreeUrl(url);
-    if (!id || seen.has(id)) continue;
+  // Gumtree (2026) serves listing cards as <a href="/web/listing/cars-vans-utes/<id>"
+  // id="user-ad-<id>" ... aria-label="<title>. Price: $X . Location: Y. Ad listed ...">.
+  // The title/price/location live in the aria-label, so we parse the card anchors.
+  const cardRe = /<a\b[^>]*\bid="user-ad-(\d+)"[^>]*>/g;
+  let m: RegExpExecArray | null;
+  while ((m = cardRe.exec(html)) && cards.length < limit) {
+    const id = m[1];
+    if (seen.has(id)) continue;
+    const tag = m[0];
+    const aria = tag.match(/aria-label="([^"]+)"/);
+    if (!aria) continue;
     seen.add(id);
-    const before = html.slice(0, um.index);
-    const titles = [...before.matchAll(titleRe)];
-    const title = titles.length ? titles[titles.length - 1][1] : url;
-    const yearM = title.match(/\b(19|20)\d{2}\b/);
-    const year = yearM ? Number(yearM[1]) : null;
-    // Price isn't in the JSON; scan a window around this listing's URL in the HTML.
-    const win = html.slice(Math.max(0, um.index - 600), um.index + 600).replace(/<[^>]+>/g, ' ');
-    const priceM = win.match(/\$([\d,]{3,})/);
+    const label = aria[1];
+    const title = label
+      .split(/\.?\s*Price:/i)[0]
+      .replace(/\.\s*$/, '')
+      .trim();
+    const priceM = label.match(/\$\s?([\d,]{3,})/);
     const price = priceM ? num(priceM[1]) : null;
-    const kmM = win.match(/([\d,]{2,})\s*km\b/i);
+    const locM = label.match(/Location:\s*([^.]*?)(?:\.\s*Ad|$)/i);
+    const location = locM ? locM[1].trim() : null;
+    const yearM = title.match(/\b(19|20)?\d{2}\b/);
+    const year = yearM ? Number(yearM[0]) : null;
+    const kmM = label.match(/([\d,]{3,})\s?km\b/i);
     const odometer = kmM ? num(kmM[1]) : null;
+    const url = `https://www.gumtree.com.au/web/listing/cars-vans-utes/${id}`;
+    // Best-effort photo: the card image appears shortly after the opening anchor
+    // (an <img> or a CSS background-image) until this id's next </a>.
+    let image: string | null = null;
+    const seg = html.slice(m.index + tag.length, m.index + tag.length + 2200);
+    const imgM = seg.match(/src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/) ||
+      seg.match(/background-image:\s*url\('?(https?:\/\/[^)'"]+)'?\)/);
+    if (imgM) image = imgM[1];
     cards.push({
       id,
       url,
-      title,
+      title: title || url,
       source: 'gumtree',
       year,
       price,
@@ -68,10 +74,11 @@ export function parseGumtree(html: string, limit: number): ListingCard[] {
       bodyType: null,
       engine: null,
       seller: null,
-      location: null,
+      location,
       state: null,
       priceBadge: null,
-      image: null,
+      image,
+      images: image ? [image] : [],
     });
   }
   return cards;

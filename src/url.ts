@@ -21,6 +21,11 @@ export interface SearchParams {
   sort?: string;
   page?: number;
   limit?: number;
+  /** Internal: pass a carsales server-side sort token (e.g. "Odometer") into the
+   * URL. carsales does not accept a server-side price filter, but it does accept
+   * these result-order tokens, and "Odometer" conveniently surfaces old, high-km,
+   * cheap cars first, which is how we hunt for sub-$4000 deals. */
+  serverSort?: string;
 }
 
 const STATE_SLUG: Record<string, string> = {
@@ -114,6 +119,9 @@ export function buildSearchUrl(p: SearchParams): string {
   if (p.postcode) params.push(`postcode=${encodeURIComponent(p.postcode)}`);
   if (p.radius != null) params.push(`distance=${encodeURIComponent(String(p.radius))}`);
   if (p.page && p.page > 1) params.push(`page=${p.page}`);
+  // Server-side result ordering. carsales honors these tokens (e.g. "Odometer"
+  // = highest odometer first, which surfaces old/cheap cars).
+  if (p.serverSort) params.push(`sort=${encodeURIComponent(p.serverSort)}`);
   if (params.length) url += '?' + params.join('&');
 
   return url;

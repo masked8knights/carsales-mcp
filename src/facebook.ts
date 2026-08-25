@@ -95,6 +95,15 @@ function parseFbListings(edges: any[], limit: number): ListingCard[] {
         continue;
       const title: string = listing.marketplace_listing_title || 'Untitled Listing';
       if (/^(\[SOLD\]|SOLD -|SOLD$)/i.test(title)) continue;
+      // Skip non-vehicle / non-sale listings (wreckers, parts, tyres, rentals).
+      // These are extremely common on Marketplace and pollute a "buy a car" search.
+      // Tolerate common Unicode obfuscation (e.g. "for híre").
+      if (
+        /(wreck|breaking|dismantl|spares|\bparts?\b|tyres|tires|rims|hubcaps?|for h[ií]re|for r[eé]nt|\brental\b|to rent|wreckers|engine only|ex-?rental)/i.test(
+          title,
+        )
+      )
+        continue;
 
       const priceStr: string = listing.listing_price?.formatted_amount || '';
       const price = num(priceStr);
@@ -119,6 +128,7 @@ function parseFbListings(edges: any[], limit: number): ListingCard[] {
         state: null,
         priceBadge: null,
         image,
+        images: image ? [image] : [],
       });
     } catch {
       continue;

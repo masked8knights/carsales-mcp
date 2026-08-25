@@ -36,11 +36,51 @@ export function parseDetails(html: string, id: string, url: string): ListingDeta
     else if (/\d.*(cyl|l\b|cc|electric)/i.test(lower)) details.engine = s;
   }
 
+  // carsales also embeds the key specs as a structured array, e.g.
+  // ["petrol","Automatic","625,000 km"]. Pick the array that actually carries a
+  // km value (some pages have many small arrays), so odometer/transmission/fuel/
+  // body are reliably populated.
+  let specArr: RegExpMatchArray | null = null;
+  for (const a of html.matchAll(/\[("[^"\]]*"(?:,"[^"\]]*"){0,8})\]/g)) {
+    const tokens = (a[1] || '').match(/"([^"]*)"/g)?.map((t) => t.replace(/^"|"$/g, ''));
+    if (tokens && tokens.some((t) => /[\d,]{2,}\s?km$/i.test(t))) {
+      specArr = tokens as unknown as RegExpMatchArray;
+      break;
+    }
+  }
+  if (specArr) {
+    const tokens = Array.from(specArr as unknown as string[]);
+    for (const t of tokens) {
+      const lower = t.toLowerCase();
+      if (/^[\d,]{2,}\s?km$/.test(lower)) details.odometer = Number(t.replace(/[^0-9]/g, ''));
+      else if (/\b(automatic|manual|cvt|semi-automatic)\b/i.test(lower) && !details.transmission)
+        details.transmission = t;
+      else if (/\b(petrol|diesel|hybrid|electric|plug-in hybrid|lpg)\b/i.test(lower) && !details.fuelType)
+        details.fuelType = t;
+      else if (/(sedan|wagon|suv|hatch|ute|coupe|van|convertible)/i.test(lower) && !details.bodyType)
+        details.bodyType = t;
+    }
+  }
+  // Fallback odometer from any "<digits> km" string on the page.
+  if (details.odometer == null) {
+    const km = html.match(/"title":"([\d,]{2,})\s?km"/) || html.match(/([\d][\d,]{2,})\s?km\b/i);
+    if (km) details.odometer = Number(km[1].replace(/,/g, ''));
+  }
+
   const h1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/);
   if (h1) details.title = h1[1].trim();
 
-  const main = html.match(/\$([\d,]{2,})/);
-  if (main) details.price = Number(main[1].replace(/,/g, ''));
+  // Price: prefer the structured numeric price, then the main heading price, then
+  // any 4-figure amount. A single cheap `$` beyond this (loan/repayment, e.g. $440)
+  // is explicitly filtered out because the asking price is never below $1,000.
+  const structured = html.match(/"price":\s*(\d{4,})/);
+  if (structured) details.price = Number(structured[1]);
+  else {
+    const heading = html.match(/"value":"\$([\d,]{4,})","variant":"heading-larg/i);
+    const main = html.match(/\$\s?([\d,]{4,})/);
+    const cand = heading ? heading[1] : main ? main[1] : null;
+    if (cand && Number(cand.replace(/,/g, '')) >= 500) details.price = Number(cand.replace(/,/g, ''));
+  }
   const excl = html.match(/\$([\d,]{2,})\s*Excl\./);
   if (excl) details.priceExGovt = Number(excl[1].replace(/,/g, ''));
 
@@ -90,15 +130,16 @@ export function parseDetails(html: string, id: string, url: string): ListingDeta
     if (ld.name && !details.title) details.title = String(ld.name);
     const mileage = ld.mileageFromOdometer?.value;
     if (mileage != null && !details.odometer) details.odometer = Number(mileage);
-    if (ld.offers?.price != null && !details.price) details.price = Number(ld.offers.price);
-    if (ld.offers?.priceSpecification?.priceExclGST != null && !details.priceExGovt)
+    // JSON-LD offers are authoritative for price; prefer them over the HTML regex.
+    if (ld.offers?.price != null) details.price = Number(ld.offers.price);
+    if (ld.offers?.priceSpecification?.priceExclGST != null)
       details.priceExGovt = Number(ld.offers.priceSpecification.priceExclGST);
     if (ld.bodyType && !details.bodyType) details.bodyType = String(ld.bodyType);
     if (ld.vehicleTransmission && !details.transmission)
       details.transmission = String(ld.vehicleTransmission);
     if (ld.fuelType && !details.fuelType)
       details.fuelType = typeof ld.fuelType === 'string' ? ld.fuelType : String(ld.fuelType.name);
-    if (ld.seller?.name && !details.seller) details.seller = String(ld.seller.name);
+    if (ld.seller?.name) details.seller = String(ld.seller.name);
     const ldImgs = Array.isArray(ld.image) ? ld.image : ld.image ? [ld.image] : [];
     const urls = ldImgs.map((i: any) => (typeof i === 'string' ? i : i?.url)).filter(Boolean);
     if (urls.length && !details.photos.length) details.photos = urls.slice(0, 12);

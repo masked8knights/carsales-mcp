@@ -1,4 +1,4 @@
-import { ListingCard, getPage, fetchSearchHtml, parseListings } from './browser.js';
+import { ListingCard, getPage, fetchSearchHtml, parseListings, isBlocked, DataDomeBlockedError } from './browser.js';
 import { buildSearchUrl, SearchParams } from './url.js';
 
 /**
@@ -18,6 +18,11 @@ export async function searchCars(p: SearchParams): Promise<ListingCard[]> {
   const page = await getPage();
   const url = buildSearchUrl(p);
   const html = await fetchSearchHtml(url, page);
+  if (isBlocked(html)) {
+    // A challenge page is not "no results" - it is a bot-protection block. Signal
+    // it explicitly so callers can report "blocked" instead of "0 cars".
+    throw new DataDomeBlockedError();
+  }
   return parseListings(html);
 }
 
@@ -71,5 +76,6 @@ function normalizeCarapis(c: any): ListingCard {
     state: c.state ?? null,
     priceBadge: c.price_indicator ?? null,
     image: c.image ?? c.photo ?? null,
+    images: c.image ? [c.image] : c.photo ? [c.photo] : [],
   };
 }

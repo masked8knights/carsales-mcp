@@ -13,6 +13,7 @@ import {
   ListingCard,
   Page,
   describeGenericListing,
+  DataDomeBlockedError,
 } from './browser.js';
 import { buildSearchUrl, SearchParams } from './url.js';
 import { parseDetails } from './details.js';
@@ -20,7 +21,7 @@ import { searchCars } from './provider.js';
 import { searchFacebookCars } from './facebook.js';
 import { searchGumtreeCars } from './gumtree.js';
 import { computeDeal } from './deal.js';
-import { computePriceInsight, formatInsight } from './insight.js';
+import { computePriceInsight, formatInsight, PriceInsight } from './insight.js';
 import {
   addWatch,
   addListingWatch,
@@ -33,6 +34,17 @@ import {
 } from './watch.js';
 import { checkVehicle } from './vehicle.js';
 import { hasIdenticalOffer, hasRecentOffer, recordOffer } from './offers.js';
+import { assessReliability, assessListingReliability, ReliabilityResult } from './reliability.js';
+import {
+  applyPrefFilters,
+  addNote,
+  clearPreferences,
+  excludeEntry,
+  getPreferences,
+  prefsFile,
+  prefsSummary,
+  setFilter,
+} from './prefs.js';
 
 const server = new McpServer({
   name: 'carsales-mcp',
@@ -132,8 +144,16 @@ server.tool(
   async (params) => {
     const url = buildSearchUrl(params as SearchParams);
     try {
-      let cards = await searchCars(params as SearchParams);
-      cards = applyPostFilters(cards, params as SearchParams);
+      let cards = await searchCarsDeep(params as SearchParams);
+      // Apply learned preferences (auto-filter + excluded listings).
+      const prefs = getPreferences();
+      const lost = new Set(prefs.excluded.map((e) => e.id));
+      cards = cards.filter((c) => !lost.has(c.id));
+      const overrides = {} as Record<string, unknown>;
+      if (params.minPrice != null) overrides.minPrice = params.minPrice;
+      if (params.maxPrice != null) overrides.maxPrice = params.maxPrice;
+      const { cards: filtered, applied } = applyPrefFilters(cards, overrides as any);
+      cards = filtered;
       const deals = new Map(cards.map((c) => [c.id, computeDeal(c)]));
       if (params.goodDealsOnly) cards = cards.filter((c) => deals.get(c.id)!.isGoodDeal);
       cards = sortCards(cards, params.sort);
@@ -165,15 +185,72 @@ server.tool(
             text:
               `Found ${cards.length} matching listing(s) on carsales.com.au (showing ${limited.length})` +
               `${goodCount ? `, ${goodCount} flagged as good deals` : ''}.\n` +
-              `Search URL: ${url}\n\n${text || 'No listings matched.'}`,
+              `Search URL: ${url}\n\n${text || 'No listings matched.'}` +
+              (prefsSummary() !== 'no preferences saved yet'
+                ? `\n\nLearned preferences (auto-applied): ${prefsSummary()}.`
+                : ''),
           },
         ],
       };
+    } catch (e) {
+      if (e instanceof DataDomeBlockedError) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'carsales.com.au is showing a DataDome bot-protection challenge, so this search returned nothing. ' +
+                'This is not "no cars" - it is carsales blocking the request. It usually happens after many ' +
+                'requests from one IP. Retry in a few minutes, reduce page depth, or set a residential proxy ' +
+                '(CARS_PROXY) to rotate IPs. Search URL: ' + url,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: 'text', text: 'search_cars failed: ' + (e as Error).message }] };
     } finally {
       // reuse the shared page; do not close it
     }
   },
 );
+
+// How many extra result pages to scan when a price filter is set and page 1 is
+// too sparse. carsales does not accept a server-side price param (it uses an
+// internal predicate DSL hidden behind the client), and it sorts page 1 by
+// relevance/freshness, so cheap old listings sit deep in the results. We use the
+// server-side `sort=Odometer` token to pull high-km (hence cheap) cars onto page
+// 1, then filter in-memory, and scan a few extra pages as a safety net.
+const DEEP_PAGES = Math.max(0, Number(process.env.CARS_DEEP_PAGES || 6));
+
+// Fetch page 1, then (when a price filter is active and the result is thin)
+// keep fetching further pages and re-filtering until we have enough matches or
+// hit the page cap. Deduped by listing id.
+async function searchCarsDeep(p: SearchParams): Promise<ListingCard[]> {
+  const hasPrice = p.minPrice != null || p.maxPrice != null;
+  const fetch = hasPrice ? { ...p, serverSort: p.serverSort || 'Odometer' } : p;
+  let cards = applyPostFilters(await searchCars({ ...fetch, page: p.page ?? 1 }), p);
+  if (!hasPrice) return cards;
+  const target = p.limit ?? 25;
+  const startPage = p.page ?? 1;
+  let page = startPage + 1;
+  while (cards.length < target && page <= startPage + DEEP_PAGES) {
+    let more: ListingCard[];
+    try {
+      more = await searchCars({ ...fetch, page });
+    } catch {
+      break;
+    }
+    if (!more.length) break;
+    cards = applyPostFilters([...cards, ...more], p);
+    page++;
+  }
+  const seen = new Set<string>();
+  return cards.filter((c) => {
+    if (seen.has(c.id)) return false;
+    seen.add(c.id);
+    return true;
+  });
+}
 
 function cardSummary(c: ListingCard): string {
   const price = c.price ? `$${c.price.toLocaleString()}` : c.priceExGovt
@@ -1225,8 +1302,161 @@ server.tool(
   },
 );
 
-async function findCardById(_page: Page, id: string, make: string, model = ''): Promise<ListingCard | null> {
+function makeModelFromTitle(title?: string | null): { make: string | null; model: string | null } {
+  const m = (title || '').trim().match(/^(\d{4})\s+([A-Za-z]+)\s+([A-Za-z0-9]+)/);
+  return m ? { make: m[2], model: m[3] } : { make: null, model: null };
+}
+
+async function findNewCarPrice(make: string | null, model: string | null, state?: string | null): Promise<number | null> {
   if (!make) return null;
+  try {
+    const cards = await searchCars({ make, model: model || undefined, condition: 'new', state: state || undefined, limit: 30 } as SearchParams);
+    const prices = cards.map((c) => c.price ?? c.priceExGovt).filter((p): p is number => p != null && p > 0).sort((a, b) => a - b);
+    return prices[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+server.tool(
+  'remember_preference',
+  'Learn what the buyer wants. Call this when the user accepts or rejects something: ' +
+    '"filter" sets a search default (e.g. maxPrice=4000); "like"/"avoid" record a ' +
+    'preference rule ("no rust", "dents are fine", "no diesels"); "reject" records a ' +
+    'specific car they said no to (with the reason). Stored locally and auto-applied ' +
+    'to future searches. Always capture the user reason - that is the learning.',
+  {
+    kind: z.enum(['filter', 'like', 'avoid', 'reject']),
+    field: z.string().optional().describe('For filter: maxPrice, minPrice, maxYear, minYear, maxOdometer, transmission, fuelType, bodyStyle, states'),
+    value: z.union([z.number(), z.string(), z.array(z.string())]).optional().describe('Filter value'),
+    text: z.string().optional().describe('For like/avoid: the rule, e.g. "no rust" or "automatic preferred"'),
+    reason: z.string().optional().describe('Why (the learning - capture the user rationale)'),
+    listingId: z.string().optional().describe('For reject: the rejected listing id'),
+    url: z.string().optional().describe('For reject: the rejected listing URL'),
+  },
+  async ({ kind, field, value, text, reason, listingId, url }) => {
+    let confirmation: string;
+    if (kind === 'filter') {
+      if (!field) return { content: [{ type: 'text', text: 'Provide field for filter (e.g. maxPrice).' }] };
+      setFilter(field as any, value ?? null, reason);
+      confirmation = `Remembered filter: ${field} = ${JSON.stringify(value ?? null)}.`;
+    } else if (kind === 'like' || kind === 'avoid') {
+      if (!text) return { content: [{ type: 'text', text: 'Provide text for like/avoid.' }] };
+      addNote(kind, text, reason);
+      confirmation = `Learned (${kind}): "${text}"${reason ? ` — ${reason}` : ''}.`;
+    } else {
+      const id = listingId || (url?.match(/([A-Z]{3,4}-AD-\d+)/) || [])[1] || '';
+      if (!id) return { content: [{ type: 'text', text: 'Provide listingId or url to reject.' }] };
+      excludeEntry(id, url || `https://www.carsales.com.au/cars/details/${id}/`, undefined, reason);
+      confirmation = `Recorded rejection of ${id}${reason ? ` — ${reason}` : ''}; it is excluded from future searches.`;
+    }
+    return {
+      content: [{ type: 'text', text: `${confirmation}\n\nCurrent: ${prefsSummary()}` }],
+    };
+  },
+);
+
+server.tool(
+  'get_preferences',
+  'Return the buyer\'s learned preferences (filters, likes, avoid-rules, rejected ' +
+    'listings) and the local file they are stored in.',
+  {},
+  async () => {
+    const p = getPreferences();
+    const lines = [
+      `Learned preferences (${prefsFile()}):`,
+      `  summary: ${prefsSummary()}`,
+      `  filters: ${JSON.stringify(p.filters)}`,
+      `  like:    ${p.like.map((n) => `"${n.text}"` + (n.reason ? ` (${n.reason})` : '')).join('; ') || 'none'}`,
+      `  avoid:   ${p.avoid.map((n) => `"${n.text}"` + (n.reason ? ` (${n.reason})` : '')).join('; ') || 'none'}`,
+      `  rejected: ${p.excluded.map((e) => `${e.id}` + (e.reason ? ` (${e.reason})` : '')).join('; ') || 'none'}`,
+    ];
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
+  },
+);
+
+server.tool(
+  'clear_preferences',
+  'Forget all learned preferences (filters, likes, avoid-rules, rejected listings).',
+  {},
+  async () => {
+    clearPreferences();
+    return { content: [{ type: 'text', text: 'Cleared all learned preferences.' }] };
+  },
+);
+
+server.tool(
+  'vehicle_review',
+  'Full buyer review of one listing: real photos (for the vision model) plus a ' +
+    'reliability/reputation assessment and a comparison to both the market average ' +
+    '(from free comparables) and the new-car price. Bundles get_listing_details + ' +
+    'assessListingReliability + price_insight + compare-to-new.',
+  {
+    listingId: z.string().optional().describe('carsales listing id, e.g. OAG-AD-26099426'),
+    url: z.string().optional().describe('Full listing URL (carsales)'),
+    includeImages: z.boolean().optional().default(true).describe('Return photos so the model can see the car'),
+  },
+  async ({ listingId, url, includeImages }) => {
+    let target = url;
+    if (!target && listingId) target = `https://www.carsales.com.au/cars/details/${listingId}/`;
+    if (!target) return { content: [{ type: 'text', text: 'Provide listingId or url.' }] };
+    const d = await describeListing(listingId, target, includeImages);
+    const meta = d.metadata as Record<string, any>;
+    const { make, model } = makeModelFromTitle(d.title ?? meta.title);
+    const year = meta.year ?? null;
+    const price = meta.price ?? null;
+    const odometer = meta.odometer ?? null;
+    const badge = meta.priceBadge ?? null;
+    const rel = assessListingReliability({ make, model, year, odometer, priceBadge: badge });
+
+    const lines: string[] = [
+      `REVIEW: ${d.title ?? listingId ?? 'listing'}`,
+      `  price: ${price != null ? '$' + Number(price).toLocaleString() : 'n/a'}   year: ${year ?? '?'}   odometer: ${odometer != null ? Number(odometer).toLocaleString() + ' km' : '?'}`,
+      `  Reliability/reputation: ${rel.band} (${rel.score}/100). ${rel.note}`,
+      rel.issues.length ? `  Watch for: ${rel.issues.join('; ')}.` : '',
+      d.text.includes('blocked') ? '  (full detail page was bot-blocked; using summary card data).' : '',
+    ].filter(Boolean);
+
+    // Market average from free comparables
+    try {
+      const comps = await searchCars({
+        make,
+        model: model || undefined,
+        state: meta.state ?? undefined,
+        minYear: year != null ? year - 1 : undefined,
+        maxYear: year != null ? year + 1 : undefined,
+        limit: 100,
+      } as SearchParams).catch(() => [] as ListingCard[]);
+      const ins = computePriceInsight(comps);
+      if (ins.count) {
+        lines.push(formatInsight(ins, make || 'this car', model || '', price));
+      } else {
+        lines.push('No free comparables found to benchmark the price.');
+      }
+    } catch {
+      lines.push('Comparables search failed; could not benchmark the price.');
+    }
+
+    // Compare to a new / current model
+    try {
+      const np = await findNewCarPrice(make, model, meta.state);
+      if (np != null) {
+        const verdict = price != null && np > 0 ? ` (${Math.round((price / np) * 100)}% of a new one)` : '';
+        lines.push(`New / current ${make || ''} ${model || ''} (new listing price): ~$${Number(np).toLocaleString()}${verdict}.`);
+      } else {
+        lines.push('No current new-car listing found to compare against.');
+      }
+    } catch {
+      // ignore
+    }
+
+    const page = await getPage();
+    const imgs = includeImages ? await downloadImages(page, d.imageUrls, 8) : [];
+    return { content: [{ type: 'text', text: lines.join('\n') + `\n\nURL: ${d.url}` }, ...imgs] };
+  },
+);
+
+async function findCardById(_page: Page, id: string, make: string, model = ''): Promise<ListingCard | null> {  if (!make) return null;
   for (let p = 1; p <= 8; p++) {
     const cards = await searchCars({ make, model, page: p, limit: 100 } as SearchParams);
     const hit = cards.find((c) => c.id === id);
