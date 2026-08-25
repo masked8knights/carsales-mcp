@@ -158,11 +158,13 @@ Each has a lean `SKILL.md` that loads chapter files on demand, keeping context s
 
 ### 1. Install
 The engine is **Camoufox** (an anti-detect, C++-patched Firefox that spoofs `navigator.webdriver`,
-WebGL, hardware concurrency, AudioContext and WebRTC), with the jo-inc build (`joinc`) as an explicit
-opt-in fallback. Because bot-protection is largely fingerprint-based, Camoufox passes Cloudflare's
-Gumtree block and is much harder for DataDome to fingerprint than vanilla Chromium. Vanilla **Chromium
-is deliberately not used at all** — it is far easier to fingerprint and would defeat the tool's whole
-purpose. Install it once:
+WebGL, hardware concurrency, AudioContext and WebRTC, with a consistent per-launch audio seed). Because
+bot-protection is largely fingerprint-based, Camoufox passes Cloudflare's Gumtree block and is much
+harder for DataDome to fingerprint than vanilla Chromium. Vanilla **Chromium is deliberately not used
+at all** — it is far easier to fingerprint and would defeat the tool's whole purpose. There is only one
+Camoufox build in this stack (the `joinc`/jo-inc and `camoufox-js` names are the same apify build), so
+no separate engine is configured; to use a genuinely custom build, point `CARS_CAMOUFOX_BINARY` at it.
+Install once:
 
 ```bash
 npx camoufox-js fetch
@@ -192,19 +194,16 @@ Code** (`~/.claude/.mcp.json`), or **opencode** (`opencode.jsonc` / `~/.config/o
 ```
 
 ### 3. Optional tuning
-carsales.com.au is behind DataDome. The server uses a clean anti-detect engine stack:
-1. `camoufox` (default): the anti-detect Firefox build, the hardest to fingerprint and the default.
-2. `joinc`: the jo-inc build, the hardest to fingerprint but least stable. Explicit opt-in.
+carsales.com.au is behind DataDome. The engine is a single anti-detect Camoufox build (no Chromium,
+no `joinc` — they are the same build). To point at a custom build, set `CARS_CAMOUFOX_BINARY=/path/to/camoufox`.
 
-There is no Chromium fallback — a vanilla Chromium is trivially fingerprinted and would contradict the
-tool's stealth purpose, so it is never launched. Force an engine with `CARS_ENGINE=camoufox|joinc`, or
-point Camoufox at a specific binary with `CARS_CAMOUFOX_BINARY=/path/to/camoufox`.
-
-The browser's User-Agent is a matching Firefox UA (never Chrome). This is a fingerprint fix, because a
-mismatched UA is a classic bot tell. `navigator.webdriver` is stripped and locale or timezone is set to
-`en-AU` / `Australia/Sydney`. Traversal is humanized by default (`CARS_HUMANIZE=1`): random jittered
-gaps + light scrolling instead of fixed-interval navigation. After a DataDome block the server waits ~90s
-before its next navigation (no burst retries) and persists the earned clearance cookie for reuse.
+The browser's User-Agent is a matching **Windows** Firefox UA, and Camoufox is told to fingerprint as
+Windows with `en-AU` locale and `geoip: AU` so the OS, locale, timezone and geolocation are internally
+consistent (a mismatch — e.g. a Windows UA on a fingerprint generated for another OS — is a classic bot
+tell). `navigator.webdriver` is stripped. Traversal is humanized on two layers: Camoufox's own C++
+input jitter, plus `CARS_HUMANIZE=1` scripted jittered gaps + light scrolling. After a DataDome block the
+server waits ~90s before its next navigation (no burst retries) and persists the earned clearance cookie
+for reuse.
 
 If you have a Carapis API key, set `CARAPIS_API_KEY` and `search_cars` will pull clean structured JSON
 from their carsales endpoint instead of scraping. If the key is absent or the call fails, it falls
@@ -216,9 +215,8 @@ proxy usually restores the photo gallery and detail pages when the IP is challen
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `CARS_ENGINE` | `camoufox` | Engine: `camoufox` (default, anti-detect); `joinc` is opt-in (hardest to fingerprint, least stable) |
 | `CARS_DEEP_PAGES` | `6` | Extra result pages to scan when a price filter is set and page 1 is too sparse |
-| `CARS_CAMOUFOX_BINARY` | – | Path to a specific Camoufox binary |
+| `CARS_CAMOUFOX_BINARY` | – | Path to a specific/custom Camoufox binary (default uses the bundled apify build) |
 | `CAMOUFOX_INSTALL_DIR` | `~/.cache/camoufox` | Where the Camoufox binary is stored |
 | `CARAPIS_API_KEY` | – | Use the Carapis REST API for search instead of scraping |
 | `CARS_PROXY` | – | Single proxy or comma-separated rotation list |
@@ -236,11 +234,29 @@ proxy usually restores the photo gallery and detail pages when the IP is challen
 | `CARS_SELFTEST_DIR` | `~/.carsales-mcp/selftest` | Where `scripts/selftest.mjs` saves fixtures |
 
 ## Anti-blocking: what we have and what we do not
-We have (all FOSS): the anti-detect Camoufox engine (default, with the `joinc` opt-in), always headful,
-a correct fingerprint (matching Firefox UA, stripped `navigator.webdriver`, en-AU locale and timezone),
-humanized traversal, proxy rotation, politeness and retries, clearance-cookie persistence, adaptive
-backoff after a block, and graceful degradation (a blocked or 403 page returns a clear challenge
-message rather than a crash or a silent "0 cars").
+We have (all FOSS): the anti-detect Camoufox engine, always headful, a fingerprint consistent with its
+Windows UA (matching OS/locale/geoip/timezone), stripped `navigator.webdriver`, uBlock Origin bundled
+(see `Note on adblockers` below), Camoufox's own input jitter plus scripted humanized traversal, proxy
+rotation, politeness and retries, clearance-cookie persistence, adaptive backoff after a block, and
+graceful degradation (a blocked or 403 page returns a clear challenge message rather than a crash or a
+silent "0 cars").
+
+**Do adblockers / tracking blockers help?** Partly, and you mostly already have it: the Camoufox build
+this server drives **auto-installs and loads uBlock Origin by default** (`camoufox-js`'s `DefaultAddons`),
+so a real ad/tracker-blocker is already running. It genuinely helps two ways — it removes third-party
+tracking beacons that contribute to cross-site bot-scoring, and a browser *with* an adblocker looks more
+like a normal user's real browser (an extension-less clean profile is itself a less-common fingerprint).
+But it should **not** be your main defence, and it will not defeat DataDome's core challenge:
+- DataDome evaluates its **own** `/js/` behavioural payload plus your TLS/fingerprint/behaviour — that
+  does not change with ad-scripts blocked.
+- Be careful not to block carsales' own scripts or the DataDome tag, or the challenge can never clear.
+
+Camoufox already ships uBlock Origin, so there is nothing to configure for ad blocking. The server also
+sets Firefox privacy prefs that block **third-party** cookies and enable Enhanced Tracking Protection
+(social trackers, cryptominers, fingerprinters) while deliberately **keeping first-party cookies** — the
+login session and the `datadome` clearance cookie are first-party, and blocking them would force a fresh
+(re-challenged) handshake on every request and make blocks *worse*, not better. The balance is: strip
+cross-site tracking noise, keep the warm session.
 
 **Blocks are reported, not hidden.** carsales uses DataDome, which challenges search pages after many
 requests from one IP. On a challenge the tools no longer silently return "0 cars" (which made clients

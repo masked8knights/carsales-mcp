@@ -7,23 +7,15 @@ import { spawn } from 'node:child_process';
 export type { Page };
 export type { Browser, BrowserContext };
 
-// Engine selection. Camoufox (camoufox-js, a C++-patched Firefox that spoofs
-// navigator.webdriver, WebGL, hardware concurrency, AudioContext, WebRTC) is the
-// default, with the jo-inc build ('joinc', https://github.com/jo-inc/camofox-browser)
-// as the hardest-to-fingerprint opt-in. Chromium was removed entirely: vanilla
-// Chromium is trivially fingerprinted and would contradict the tool's stealth
-// purpose, so it is never a safe fallback. Set CARS_ENGINE to pin one tier.
-type Engine = 'joinc' | 'camoufox';
-const ENGINE_RAW = (process.env.CARS_ENGINE || 'camoufox').toLowerCase();
-const ENGINE: Engine = ENGINE_RAW === 'joinc' ? 'joinc' : 'camoufox';
-
-// Optional: point Camoufox at a specific browser binary (e.g. a build you
-// fetched yourself from github.com/jo-inc/camofox-browser releases).
+// Engine. Only one anti-detect browser exists in this stack: Camoufox (camoufox-js,
+// a C++-patched Firefox that spoofs navigator.webdriver, WebGL, hardware concurrency,
+// AudioContext, WebRTC and a consistent per-launch audio seed). The "joinc"/jo-inc
+// and camoufox-js names are the SAME build from apify/camoufox-js - there is no
+// separate "joinc" binary - so a single engine is the only honest configuration. To
+// use a genuinely custom build (e.g. a differently-patched Camoufox you fetched
+// yourself), point CARS_CAMOUFOX_BINARY at it. Chromium was removed: vanilla
+// Chromium is trivially fingerprinted and would contradict the tool's stealth purpose.
 const CUSTOM_CAMOUFOX_BINARY = process.env.CARS_CAMOUFOX_BINARY || '';
-
-// The engine that actually launched, so the log and active-engine state reflect
-// reality across the fallback chain (camoufox -> joinc).
-let activeEngine: Engine | null = null;
 
 export function decodeEntities(s: string): string {
   return s
@@ -138,22 +130,46 @@ async function launchCamoufox(): Promise<Browser> {
   await ensureCamoufoxBinary();
   const mod: any = await import('camoufox-js');
   const { firefox } = await import('playwright');
-  const opts: any = await mod.launchOptions({});
+  // Keep the browser fingerprint internally consistent with the User-Agent and
+  // locale set in baseContextOptions(): a Windows UA / en-AU locale paired with a
+  // fingerprint generated for the wrong OS is a contradiction a fingerprintist
+  // (CreepJS, FingerprintJS, DataDome) reads as a bot tell. Force a matching OS,
+  // and let Camoufox geolocate to AU so the location matches the Browser timezone.
+  // Camoufox's own C++-level humanize (jittered mouse/keyboard) is the strongest
+  // behavioural defence available, so it stays on unless explicitly disabled.
+  const opts: any = await mod.launchOptions({
+    os: 'windows',
+    geoip: 'AU',
+    locale: 'en-AU',
+    ...(HUMANIZE ? { humanize: true } : {}),
+  });
+  // Privacy / tracking: block third-party cookies AND enable Firefox's Enhanced
+  // Tracking Protection, but keep FIRST-PARTY cookies. First-party cookies are
+  // essential here - the DataDome clearance cookie and the login session are both
+  // first-party, and blocking them would force a fresh (re-challenged) handshake
+  // on every request, which makes blocks worse, not better. CookieBehavior 5 =
+  // reject all third-party, keep first-party; userContextId.enabled isolates
+  // containers; ETP strict (0) blocks social/tracking/cryptominers/fingerprinters.
+  const prefs = { ...(opts.firefoxUserPrefs || {}) };
+  Object.assign(prefs, {
+    'network.cookie.cookieBehavior': 5,
+    'network.cookie.thirdparty.sessionOnly': true,
+    'privacy.userContext.enabled': true,
+    'privacy.trackingprotection.enabled': true,
+    'privacy.trackingprotection.socialtracking.enabled': true,
+    'privacy.trackingprotection.cryptomining.enabled': true,
+    'privacy.trackingprotection.fingerprinting.enabled': true,
+    'privacy.trackingprotection.pbmode.enabled': true,
+    'browser.contentblocking.category': 'strict',
+    'browser.cache.disk.enable': false,
+    'privacy.clearOnShutdown.cookies': false,
+  });
+  opts.firefoxUserPrefs = prefs;
   if (CUSTOM_CAMOUFOX_BINARY) {
     opts.executablePath = CUSTOM_CAMOUFOX_BINARY;
     console.error(`[carsales-mcp] Using custom Camoufox binary: ${CUSTOM_CAMOUFOX_BINARY}`);
   }
   return firefox.launch({ ...opts, headless: false });
-}
-
-// Ordered fallback chain. Both are anti-detect Firefox forks. Camoufox is the
-// default (stable, C++-patched). The jo-inc build ('joinc') is the hardest to
-// fingerprint but least stable, so it is tried last as an explicit opt-in. There
-// is deliberately no Chromium fallback: a real, headed, anti-detect Firefox is the
-// only path consistent with this tool's stealth purpose.
-function engineOrder(): Engine[] {
-  if (ENGINE === 'joinc') return ['joinc', 'camoufox'];
-  return ['camoufox', 'joinc'];
 }
 
 async function getBrowser(): Promise<Browser> {
@@ -168,26 +184,20 @@ async function getBrowser(): Promise<Browser> {
     await browser.close().catch(() => {});
     browser = null;
   }
-  for (const step of engineOrder()) {
-    try {
-      browser = await launchCamoufox();
-      activeEngine = step;
-      console.error(`[carsales-mcp] Using Camoufox engine (${step}).`);
-      return browser;
-    } catch (e) {
-      console.error(
-        `[carsales-mcp] Engine "${step}" failed:`,
-        (e as Error).message.split('\n')[0],
-      );
-    }
+  try {
+    browser = await launchCamoufox();
+    console.error('[carsales-mcp] Using Camoufox engine.');
+    return browser;
+  } catch (e) {
+    console.error('[carsales-mcp] Engine launch failed:', (e as Error).message.split('\n')[0]);
+    throw e;
   }
-  throw new Error('All browser engines failed to launch');
 }
 
 function baseContextOptions(): any {
-  // IMPORTANT: the UA must match the engine. Camoufox and joinc are both
-  // Firefox-based, so a Chrome UA on Firefox is a classic fingerprint mismatch
-  // that trips anti-bot. Chromium was removed, so there is never a Chrome UA.
+  // IMPORTANT: the UA must match the engine. Camoufox is Firefox-based, and we
+  // tell Camoufox to fingerprint as Windows (launchCamoufox -> os:'windows'), so
+  // this Windows Firefox UA is consistent. A mismatched UA is a classic bot tell.
   const firefoxUA =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0';
   return {
