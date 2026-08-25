@@ -63,9 +63,10 @@ function applyPostFilters(cards: ListingCard[], p: SearchParams): ListingCard[] 
   let out = cards;
   if (p.minPrice != null) out = out.filter((c) => priceInRange(c, p.minPrice, undefined));
   if (p.maxPrice != null) out = out.filter((c) => priceInRange(c, undefined, p.maxPrice));
-  if (p.minYear != null) out = out.filter((c) => (c.year ?? 0) >= p.minYear!);
-  if (p.maxYear != null) out = out.filter((c) => (c.year ?? Infinity) <= p.maxYear!);
-  if (p.maxOdometer != null) out = out.filter((c) => (c.odometer ?? Infinity) <= p.maxOdometer!);
+  // Unknown value (null) -> never exclude, matching the price contract above.
+  if (p.minYear != null) out = out.filter((c) => c.year == null || c.year >= p.minYear!);
+  if (p.maxYear != null) out = out.filter((c) => c.year == null || c.year <= p.maxYear!);
+  if (p.maxOdometer != null) out = out.filter((c) => c.odometer == null || c.odometer <= p.maxOdometer!);
   return out;
 }
 
@@ -237,7 +238,10 @@ async function searchCarsDeep(p: SearchParams): Promise<ListingCard[]> {
     let more: ListingCard[];
     try {
       more = await searchCars({ ...fetch, page });
-    } catch {
+    } catch (e) {
+      // A block is NOT "no cars" - surface it so the client warns the user rather
+      // than concluding the market is empty. Only stop quietly on other errors.
+      if (e instanceof DataDomeBlockedError) throw e;
       break;
     }
     if (!more.length) break;
@@ -826,20 +830,30 @@ server.tool(
   },
   async ({ make, model, location, state, minPrice, maxPrice, minYear, maxYear, radius, goodDealsOnly, cluster, limit }) => {
     const query = [make, model].filter(Boolean).join(' ');
-    const [csRes, fbRes, gtRes] = await Promise.allSettled([
-      searchCars({ make, model, state, minPrice, maxPrice, minYear, maxYear, limit: 100 } as SearchParams),
-      searchFacebookCars({ query, location, minPrice, maxPrice, radius, limit: 40 }),
-      searchGumtreeCars({ query, location, minPrice, maxPrice, radius, limit: 40 }),
-    ]);
-    const carsales = csRes.status === 'fulfilled' ? csRes.value : [];
-    const facebook = fbRes.status === 'fulfilled' ? fbRes.value : [];
-    const gumtree = gtRes.status === 'fulfilled' ? gtRes.value : [];
-    if (csRes.status === 'rejected')
-      console.error('[carsales-mcp] carsales leg failed:', (csRes.reason as Error).message);
-    if (fbRes.status === 'rejected')
-      console.error('[carsales-mcp] facebook leg failed:', (fbRes.reason as Error).message);
-    if (gtRes.status === 'rejected')
-      console.error('[carsales-mcp] gumtree leg failed:', (gtRes.reason as Error).message);
+    // Sequential, not Promise.all: carsales and gumtree both use page.goto() on the
+    // shared singleton page, so parallel legs drive the same page concurrently and
+    // interleave/cancel each other (returning incomplete data, and looking like bot
+    // traffic). Run them one at a time to keep each page load clean and humanised.
+    async function safe(fn: () => Promise<ListingCard[]>, label: string): Promise<ListingCard[]> {
+      try {
+        return await fn();
+      } catch (e) {
+        console.error(`[carsales-mcp] ${label} leg failed:`, (e as Error).message);
+        return [];
+      }
+    }
+    const carsales = await safe(
+      () => searchCars({ make, model, state, minPrice, maxPrice, minYear, maxYear, limit: 100 } as SearchParams),
+      'carsales',
+    );
+    const facebook = await safe(
+      () => searchFacebookCars({ query, location, minPrice, maxPrice, radius, limit: 40 }),
+      'facebook',
+    );
+    const gumtree = await safe(
+      () => searchGumtreeCars({ query, location, minPrice, maxPrice, radius, limit: 40 }),
+      'gumtree',
+    );
 
     let cards = dedupeListings([...carsales, ...facebook, ...gumtree]);
     if (minPrice != null) cards = cards.filter((c) => priceInRange(c, minPrice, undefined));
@@ -929,14 +943,23 @@ server.tool(
     targetPrice: z.number().optional().describe('Optional price to judge against the band'),
   },
   async ({ make, model, state, minYear, maxYear, targetPrice }) => {
-    const cards = await searchCars({
-      make,
-      model,
-      state,
-      minYear,
-      maxYear,
-      limit: 100,
-    } as SearchParams).catch(() => [] as ListingCard[]);
+    let cards: ListingCard[];
+    try {
+      cards = await searchCars({ make, model, state, minYear, maxYear, limit: 100 } as SearchParams);
+    } catch (e) {
+      if (e instanceof DataDomeBlockedError)
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'carsales.com.au served a DataDome bot-protection challenge, so no free comparables ' +
+                'could be pulled. This is a block, not an empty market. Retry shortly or set CARS_PROXY.',
+            },
+          ],
+        };
+      return { content: [{ type: 'text', text: 'price_insight failed: ' + (e as Error).message }] };
+    }
     const insight = computePriceInsight(cards);
     let cross = '';
     // Second, free valuation source: cross-market comparables (Gumtree + Facebook).
@@ -995,12 +1018,19 @@ server.tool(
     includeImages: z.boolean().optional().default(false).describe('Also return photos as image blocks'),
   },
   async ({ listings, includeImages }) => {
-    const details: { id: string; title: string | null; url: string; metadata: Record<string, unknown> }[] = [];
-    for (const l of listings) {
-      let target = l.url;
-      if (!target && l.listingId) target = `https://www.carsales.com.au/cars/details/${l.listingId}/`;
-      if (!target) continue;
-      details.push(await describeListing(l.listingId, target, includeImages));
+    const resolved = listings
+      .map((l) => l.url || (l.listingId ? `https://www.carsales.com.au/cars/details/${l.listingId}/` : ''))
+      .filter(Boolean);
+    const details: { id: string; title: string | null; url: string; metadata: Record<string, unknown>; imageUrls: string[] }[] = [];
+    const imageBlocks: Array<{ type: 'image'; data: string; mimeType: string }> = [];
+    for (const target of resolved) {
+      const idMatch = target.match(/([A-Z]{3,4}-AD-\d+)/);
+      const d = await describeListing(idMatch ? idMatch[1] : undefined, target, includeImages);
+      details.push({ id: d.id, title: d.title, url: d.url, metadata: d.metadata, imageUrls: d.imageUrls });
+      if (includeImages) {
+        const page = await getPage();
+        imageBlocks.push(...(await downloadImages(page, d.imageUrls, 8)));
+      }
     }
     if (details.length < 2)
       return { content: [{ type: 'text', text: 'Provide at least 2 resolvable listings.' }] };
@@ -1026,7 +1056,7 @@ server.tool(
     const out =
       `Comparison (${details.length} listings):\n\n${header}\n${rows.join('\n')}\n\n` +
       details.map((d) => `${d.title || d.id}: ${d.url}`).join('\n');
-    return { content: [{ type: 'text', text: out }] };
+    return { content: [{ type: 'text', text: out }, ...(includeImages ? imageBlocks : [])] };
   },
 );
 
@@ -1047,7 +1077,23 @@ server.tool(
     limit: z.number().optional().default(50).describe('Max results to return'),
   },
   async (p) => {
-    const cards = await searchCars(p as SearchParams).catch(() => [] as ListingCard[]);
+    let cards: ListingCard[];
+    try {
+      cards = await searchCars(p as SearchParams);
+    } catch (e) {
+      if (e instanceof DataDomeBlockedError)
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'carsales.com.au served a DataDome bot-protection challenge, so there is nothing to export. ' +
+                'Retry shortly or set CARS_PROXY.',
+            },
+          ],
+        };
+      return { content: [{ type: 'text', text: 'export_csv failed: ' + (e as Error).message }] };
+    }
     if (!cards.length) return { content: [{ type: 'text', text: 'No listings to export.' }] };
     const cols = ['source', 'id', 'title', 'year', 'price', 'priceExGovt', 'odometer', 'transmission', 'fuelType', 'bodyType', 'seller', 'state', 'url'];
     const esc = (v: unknown) => {
@@ -1456,9 +1502,19 @@ server.tool(
   },
 );
 
-async function findCardById(_page: Page, id: string, make: string, model = ''): Promise<ListingCard | null> {  if (!make) return null;
-  for (let p = 1; p <= 8; p++) {
-    const cards = await searchCars({ make, model, page: p, limit: 100 } as SearchParams);
+async function findCardById(_page: Page, id: string, make: string, model = ''): Promise<ListingCard | null> {
+  if (!make) return null;
+  // Keep this short: every extra page is another navigation that DataDome scores,
+  // and on a blocked detail page this fallback previously fired up to 8 full
+  // searches (8 extra page loads) which ramps the block. Cap at 3 and stop early.
+  for (let p = 1; p <= 3; p++) {
+    let cards: ListingCard[];
+    try {
+      cards = await searchCars({ make, model, page: p, limit: 100 } as SearchParams);
+    } catch (e) {
+      if (e instanceof DataDomeBlockedError) break;
+      continue;
+    }
     const hit = cards.find((c) => c.id === id);
     if (hit) return hit;
     if (cards.length < 10) break;

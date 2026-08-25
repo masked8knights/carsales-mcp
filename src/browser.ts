@@ -30,8 +30,14 @@ const ENGINE: Engine =
 // fetched yourself from github.com/jo-inc/camofox-browser releases).
 const CUSTOM_CAMOUFOX_BINARY = process.env.CARS_CAMOUFOX_BINARY || '';
 
+// The engine that actually launched (not the configured constant). The fallback
+// chain may land on Chromium even when CARS_ENGINE=camoufox, so UA selection must
+// read this, not the constant - a mismatched UA on the wrong engine is a classic
+// fingerprint tell that anti-bot (DataDome/Cloudflare) flags instantly.
+let activeEngine: Engine | null = null;
+
 function isFirefox(): boolean {
-  return ENGINE !== 'chromium';
+  return activeEngine !== 'chromium' && activeEngine !== null;
 }
 
 export function decodeEntities(s: string): string {
@@ -66,6 +72,13 @@ const BACKOFF = Number(process.env.CARS_BACKOFF || 2000);
 const CAPTCHA_SOLVER = (process.env.CARS_CAPTCHA_SOLVER || 'none').toLowerCase();
 const BUSTER_EXT = process.env.CARS_BUSTER_EXTENSION || '';
 
+// Headful mode (CARS_HEADFUL=1): run the browser with a real window. Two benefits -
+// (1) a headful browser presents a far richer fingerprint than headless (headless is
+// one of the strongest bot signals DataDome scores), and (2) the user can watch the
+// agent browse, the same affordance browser-use's UI gives. On WSLg / a desktop this
+// shows a window; headless is the portable default for servers / CI.
+const HEADFUL = (process.env.CARS_HEADFUL || '0') !== '0';
+
 // Authenticated sessions: cookies are persisted to this file so a user can log
 // in once (via set_auth / a real browser) and have the session reused across
 // runs and tool calls. Carsales unlocks extra actions (saving a vehicle, making
@@ -74,6 +87,11 @@ const COOKIE_FILE =
   process.env.CARS_COOKIE_FILE || path.join(os.homedir(), '.carsales-mcp', 'cookies.json');
 
 let lastNav = 0;
+// Adaptive anti-blast memory: after a DataDome challenge, back off far more for
+// a while so we don't keep hammering right after a block (which looks exactly like
+// a bot doing burst retries and extends the block). Reset once a real page loads.
+let lastBlockAt = 0;
+const BLOCK_COOLDOWN_MS = 90_000; // after a block, wait ~90s before the next navigate
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -99,10 +117,13 @@ async function humanizePage(page: Page, isResults: boolean): Promise<void> {
   try {
     await humanPause(1200, 3200);
     if (isResults) {
-      // A reader scrolls the grid a little rather than reading the top only.
-      await page.evaluate(() => window.scrollBy(0, rand(200, 900))).catch(() => {});
+      // A reader scrolls the grid a little rather than reading the top only. rand()
+      // is a Node-side function and does not exist inside page.evaluate, so the
+      // scroll offsets must be passed in (previously this silently threw a
+      // ReferenceError and the page never scrolled - a real behavioural tell).
+      await page.evaluate((y) => window.scrollBy(0, y), rand(200, 900)).catch(() => {});
       await humanPause(600, 1600);
-      await page.evaluate(() => window.scrollBy(0, rand(-300, 300))).catch(() => {});
+      await page.evaluate((y) => window.scrollBy(0, y), rand(-300, 300)).catch(() => {});
     }
   } catch {
     // best-effort, never let humanizing break a fetch
@@ -141,7 +162,7 @@ async function launchCamoufox(latest: boolean): Promise<Browser> {
     opts.executablePath = CUSTOM_CAMOUFOX_BINARY;
     console.error(`[carsales-mcp] Using custom Camoufox binary: ${CUSTOM_CAMOUFOX_BINARY}`);
   }
-  return firefox.launch({ ...opts, headless: true });
+  return firefox.launch({ ...opts, headless: !HEADFUL });
 }
 
 async function launchChromium(): Promise<Browser> {
@@ -154,7 +175,7 @@ async function launchChromium(): Promise<Browser> {
     args.push(`--load-extension=${BUSTER_EXT}`, `--disable-extensions-except=${BUSTER_EXT}`);
     console.error('[carsales-mcp] CAPTCHA solver: Buster extension loaded (audio challenges).');
   }
-  return chromium.launch({ channel: 'chromium', args });
+  return chromium.launch({ channel: 'chromium', args, headless: !HEADFUL });
 }
 
 // Ordered fallback chain. Default is Camoufox (best anti-fingerprint engine) →
@@ -182,11 +203,13 @@ async function getBrowser(): Promise<Browser> {
     try {
       if (step === 'chromium') {
         browser = await launchChromium();
+        activeEngine = 'chromium';
         console.error('[carsales-mcp] Using hardened Chromium engine.');
         return browser;
       }
       const latest = step === 'joinc';
       browser = await launchCamoufox(latest);
+      activeEngine = step;
       console.error(`[carsales-mcp] Using Camoufox engine (${step}).`);
       return browser;
     } catch (e) {
@@ -234,8 +257,23 @@ async function newContext(): Promise<BrowserContext> {
   return ctx;
 }
 
+let ephemeralPage: Page | null = null;
+
 async function newPageWithProxy(): Promise<Page> {
-  return (await newContext()).newPage();
+  // Rotating proxies must not leak a context on every request: close the previous
+  // disposable page before minting a fresh one, so memory stays bounded even over
+  // a long session (previously each getPage() leaked a full browser context).
+  if (ephemeralPage) {
+    try {
+      await ephemeralPage.context().close();
+    } catch {
+      // already closed
+    }
+    ephemeralPage = null;
+  }
+  const page = await (await newContext()).newPage();
+  ephemeralPage = page;
+  return page;
 }
 
 export async function getPage(): Promise<Page> {
@@ -373,7 +411,13 @@ async function navigate(_page: Page, url: string): Promise<string> {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const elapsed = Date.now() - lastNav;
     // Jittered, human-ish gap between navigations instead of a fixed interval.
-    const gap = HUMANIZE ? rand(MIN_DELAY, MIN_DELAY + 2600) : MIN_DELAY;
+    let gap = HUMANIZE ? rand(MIN_DELAY, MIN_DELAY + 2600) : MIN_DELAY;
+    // Right after a DataDome challenge, stay quiet for a while so we don't retry
+    // in a burst (a burst is a strong behavioural bot signal and extends the ban).
+    const sinceBlock = Date.now() - lastBlockAt;
+    if (lastBlockAt && sinceBlock < BLOCK_COOLDOWN_MS) {
+      gap = Math.max(gap, BLOCK_COOLDOWN_MS - sinceBlock);
+    }
     if (elapsed < gap) await sleep(gap - elapsed);
     lastNav = Date.now();
 
@@ -400,7 +444,19 @@ async function navigate(_page: Page, url: string): Promise<string> {
       sharedPage = null;
       lastHtml = '';
     }
-    if (got && !isBlocked(lastHtml)) return lastHtml;
+    if (got && !isBlocked(lastHtml)) {
+      // Persist the session's cookies (incl. the DataDome clearance cookie) as
+      // soon as we earn them, so later requests within this browser session reuse
+      // the clearance instead of being re-challenged. Best-effort.
+      lastBlockAt = 0; // a real page loaded; clear the cooldown
+      try {
+        await saveCookiesToFile(page.context());
+      } catch {
+        // never let background cookie persistence break a navigation
+      }
+      return lastHtml;
+    }
+    if (got) lastBlockAt = Date.now();
     // Blocked: try the FOSS CAPTCHA solver, then re-navigate to fetch the real page.
     if (CAPTCHA_SOLVER === 'buster' && got) {
       const solved = await solveCaptchaIfPresent(page);
