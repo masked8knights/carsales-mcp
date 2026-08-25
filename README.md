@@ -151,19 +151,24 @@ Each has a lean `SKILL.md` that loads chapter files on demand, keeping context s
 ## Setup
 
 ### 1. Install
-The default engine is **Camoufox** (an anti-detect, C++-patched Firefox that spoofs `navigator.webdriver`,
-WebGL, hardware concurrency, AudioContext and WebRTC). Because bot-protection is largely
-fingerprint-based, Camoufox passes Cloudflare's Gumtree block and is much harder for DataDome to
-fingerprint than vanilla Chromium. Install it (and the fallback Chromium) once:
+The engine is **Camoufox** (an anti-detect, C++-patched Firefox that spoofs `navigator.webdriver`,
+WebGL, hardware concurrency, AudioContext and WebRTC), with the jo-inc build (`joinc`) as an explicit
+opt-in fallback. Because bot-protection is largely fingerprint-based, Camoufox passes Cloudflare's
+Gumtree block and is much harder for DataDome to fingerprint than vanilla Chromium. Vanilla **Chromium
+is deliberately not used at all** — it is far easier to fingerprint and would defeat the tool's whole
+purpose. Install it once:
 
 ```bash
-npx playwright install chromium
 npx camoufox-js fetch
 npm install -g carsales-mcp
 # then run via your MCP client, e.g. npx -y carsales-mcp
 ```
 
-If Camoufox fails to launch on Linux, install its system libraries: `npx playwright install-deps chromium`.
+The browser runs **headful** (a real window), not headless. A headless browser is one of the strongest
+bot signals DataDome scores, so it is never used. This needs a display — on WSLg, Windows or a desktop
+you'll see a window (you can watch the agent browse). On a headless server or CI, wrap the process in a
+virtual display instead, e.g. `xvfb-run -a node dist/index.js`, so the browser is still a real headed
+window. If Camoufox fails to launch on Linux, install its system libraries: `npx playwright install-deps firefox`.
 
 ### 2. Add to your MCP client
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`), **Claude
@@ -181,19 +186,19 @@ Code** (`~/.claude/.mcp.json`), or **opencode** (`opencode.jsonc` / `~/.config/o
 ```
 
 ### 3. Optional tuning
-carsales.com.au is behind DataDome. The server uses a clean 2-tier engine:
-1. `camoufox` (default): the anti-detect Firefox build, the hardest to fingerprint.
-2. `chromium`: a hardened Chromium with automation flags stripped and `--no-sandbox`; the reliable
-   fallback. The browser auto-recovers if a page/context/browser dies mid-run.
+carsales.com.au is behind DataDome. The server uses a clean anti-detect engine stack:
+1. `camoufox` (default): the anti-detect Firefox build, the hardest to fingerprint and the default.
+2. `joinc`: the jo-inc build, the hardest to fingerprint but least stable. Explicit opt-in.
 
-If the default fails to launch, the server drops to Chromium. Force an engine with
-`CARS_ENGINE=camoufox|chromium|joinc`, or point Camoufox at a specific binary with
-`CARS_CAMOUFOX_BINARY=/path/to/camoufox`. (`joinc`, the jo-inc build, is opt-in and least stable.)
+There is no Chromium fallback — a vanilla Chromium is trivially fingerprinted and would contradict the
+tool's stealth purpose, so it is never launched. Force an engine with `CARS_ENGINE=camoufox|joinc`, or
+point Camoufox at a specific binary with `CARS_CAMOUFOX_BINARY=/path/to/camoufox`.
 
-The browser's User-Agent matches its engine (Firefox UA on Camoufox, Chrome UA on Chromium). This is a
-fingerprint fix, because a mismatched UA is a classic bot tell. `navigator.webdriver` is stripped and
-locale or timezone is set to `en-AU` / `Australia/Sydney`. Traversal is humanized by default
-(`CARS_HUMANIZE=1`): random jittered gaps + light scrolling instead of fixed-interval navigation.
+The browser's User-Agent is a matching Firefox UA (never Chrome). This is a fingerprint fix, because a
+mismatched UA is a classic bot tell. `navigator.webdriver` is stripped and locale or timezone is set to
+`en-AU` / `Australia/Sydney`. Traversal is humanized by default (`CARS_HUMANIZE=1`): random jittered
+gaps + light scrolling instead of fixed-interval navigation. After a DataDome block the server waits ~90s
+before its next navigation (no burst retries) and persists the earned clearance cookie for reuse.
 
 If you have a Carapis API key, set `CARAPIS_API_KEY` and `search_cars` will pull clean structured JSON
 from their carsales endpoint instead of scraping. If the key is absent or the call fails, it falls
@@ -205,7 +210,7 @@ proxy usually restores the photo gallery and detail pages when the IP is challen
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `CARS_ENGINE` | `camoufox` | Engine: `camoufox` (default, anti-detect) then `chromium` fallback. `joinc` is opt-in |
+| `CARS_ENGINE` | `camoufox` | Engine: `camoufox` (default, anti-detect); `joinc` is opt-in (hardest to fingerprint, least stable) |
 | `CARS_DEEP_PAGES` | `6` | Extra result pages to scan when a price filter is set and page 1 is too sparse |
 | `CARS_CAMOUFOX_BINARY` | – | Path to a specific Camoufox binary |
 | `CAMOUFOX_INSTALL_DIR` | `~/.cache/camoufox` | Where the Camoufox binary is stored |
@@ -214,8 +219,8 @@ proxy usually restores the photo gallery and detail pages when the IP is challen
 | `CARS_COOKIE_FILE` | `~/.carsales-mcp/cookies.json` | Where login session cookies are stored |
 | `CARS_WATCH_FILE` | `~/.carsales-mcp/watches.json` | Where saved searches and listing watches are stored |
 | `CARS_WATCH_WEBHOOK` | – | POST new watch listings here (ntfy, Discord, Slack) for free alerts |
-| `CARS_CAPTCHA_SOLVER` | `none` | FOSS CAPTCHA help: `buster` (audio-challenge solver, Chromium only). Does not defeat DataDome |
-| `CARS_BUSTER_EXTENSION` | – | Path to your installed Buster extension when `CARS_CAPTCHA_SOLVER=buster` |
+| `CARS_CAPTCHA_SOLVER` | `none` | FOSS CAPTCHA help: `buster` (audio-challenge solver). Does not defeat DataDome |
+| `CARS_BUSTER_EXTENSION` | – | Path to your installed Buster extension when `CARS_CAPTCHA_SOLVER=buster` (Firefox build) |
 | `CARS_OFFER_COOLDOWN_HOURS` | `24` | `make_offer` refuses re-contact to the same listing within this window |
 | `CARS_OFFERS_FILE` | `~/.carsales-mcp/sent-offers.json` | Append-only log that enforces never sending the same offer twice |
 | `CARS_MIN_DELAY` | `1500` | Minimum ms between navigations (be polite) |
@@ -225,10 +230,11 @@ proxy usually restores the photo gallery and detail pages when the IP is challen
 | `CARS_SELFTEST_DIR` | `~/.carsales-mcp/selftest` | Where `scripts/selftest.mjs` saves fixtures |
 
 ## Anti-blocking: what we have and what we do not
-We have (all FOSS): the anti-detect Camoufox engine (default) with a single Chromium fallback, a
-correct fingerprint (matching UA, stripped `navigator.webdriver`, en-AU locale and timezone), humanized
-traversal, proxy rotation, politeness and retries, and graceful degradation (a blocked or 403 page
-returns fewer or zero results, never a crash).
+We have (all FOSS): the anti-detect Camoufox engine (default, with the `joinc` opt-in), always headful,
+a correct fingerprint (matching Firefox UA, stripped `navigator.webdriver`, en-AU locale and timezone),
+humanized traversal, proxy rotation, politeness and retries, clearance-cookie persistence, adaptive
+backoff after a block, and graceful degradation (a blocked or 403 page returns a clear challenge
+message rather than a crash or a silent "0 cars").
 
 **Blocks are reported, not hidden.** carsales uses DataDome, which challenges search pages after many
 requests from one IP. On a challenge the tools no longer silently return "0 cars" (which made clients
@@ -254,10 +260,10 @@ reCAPTCHA/Cloudflare Turnstile/GeeTest, but **not DataDome** (the system carsale
 not fully FOSS (CaptchaSonic is pay-per-solve; CapSkip needs a licensed desktop app), and they add a
 separate heavy dependency, so we did not adopt them. As an opt-in, we wire the FOSS Buster extension
 (`CARS_CAPTCHA_SOLVER=buster`, MIT-licensed, solves hCaptcha and reCAPTCHA audio challenges locally via
-the browser's speech recognition, no paid service). Caveats: it only works on the Chromium engine, it
-needs you to point `CARS_BUSTER_EXTENSION` at your installed copy, and it does not defeat behavioural
-bot-protection like DataDome. If a CAPTCHA appears and no solver is configured, the tool reports it and
-stops. Verify manually in your browser.
+the browser's speech recognition, no paid service). Caveats: the Buster build must match the Firefox
+engine, you must point `CARS_BUSTER_EXTENSION` at your installed copy, and it does not defeat
+behavioural bot-protection like DataDome. If a CAPTCHA appears and no solver is configured, the tool
+reports it and stops. Verify manually in your browser.
 
 ## Notes and limits
 - DataDome may challenge after many requests from one IP. If the search reports a DataDome challenge

@@ -1,4 +1,4 @@
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
+import { Browser, BrowserContext, Page } from 'playwright';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,8 +11,10 @@ export type { Browser, BrowserContext };
 // (https://github.com/jo-inc/camofox-browser), the hardest-to-fingerprint
 // option. If it fails to launch we fall back to the camoufox-js packaged
 // stable build, and finally to a hardened Chromium. Set CARS_ENGINE to pin a
-// tier: 'camoufox' (default) | 'chromium' | 'joinc'.
-type Engine = 'joinc' | 'camoufox' | 'chromium';
+// tier: 'camoufox' (default) | 'joinc'. Chromium was removed: it is far easier to
+// fingerprint (DataDome's whole point), so it is never a safe fallback for a
+// tool whose job is stealth. Only the anti-detect Firefox engines are used.
+type Engine = 'joinc' | 'camoufox';
 /**
  * Default engine. We default to the anti-detect Camoufox engine (Camoufox-js,
  * a C++-patched Firefox that spoofs navigator.webdriver, WebGL, hardware
@@ -23,8 +25,7 @@ type Engine = 'joinc' | 'camoufox' | 'chromium';
  * Set CARS_ENGINE to pin one.
  */
 const ENGINE_RAW = (process.env.CARS_ENGINE || 'camoufox').toLowerCase();
-const ENGINE: Engine =
-  ENGINE_RAW === 'chromium' ? 'chromium' : ENGINE_RAW === 'camoufox' ? 'camoufox' : 'joinc';
+const ENGINE: Engine = ENGINE_RAW === 'joinc' ? 'joinc' : 'camoufox';
 
 // Optional: point Camoufox at a specific browser binary (e.g. a build you
 // fetched yourself from github.com/jo-inc/camofox-browser releases).
@@ -36,9 +37,7 @@ const CUSTOM_CAMOUFOX_BINARY = process.env.CARS_CAMOUFOX_BINARY || '';
 // fingerprint tell that anti-bot (DataDome/Cloudflare) flags instantly.
 let activeEngine: Engine | null = null;
 
-function isFirefox(): boolean {
-  return activeEngine !== 'chromium' && activeEngine !== null;
-}
+
 
 export function decodeEntities(s: string): string {
   return s
@@ -72,12 +71,13 @@ const BACKOFF = Number(process.env.CARS_BACKOFF || 2000);
 const CAPTCHA_SOLVER = (process.env.CARS_CAPTCHA_SOLVER || 'none').toLowerCase();
 const BUSTER_EXT = process.env.CARS_BUSTER_EXTENSION || '';
 
-// Headful mode (CARS_HEADFUL=1): run the browser with a real window. Two benefits -
-// (1) a headful browser presents a far richer fingerprint than headless (headless is
-// one of the strongest bot signals DataDome scores), and (2) the user can watch the
-// agent browse, the same affordance browser-use's UI gives. On WSLg / a desktop this
-// shows a window; headless is the portable default for servers / CI.
-const HEADFUL = (process.env.CARS_HEADFUL || '0') !== '0';
+// Headful is now mandatory. Headless browsers are one of the strongest bot signals
+// DataDome scores (a headful real browser has a far richer, more believable
+// fingerprint). The tradeoff is it needs a display - on WSLg / a desktop this shows
+// a window you can watch (the same affordance browser-use's UI gives). For a truly
+// headless server (CI/Docker), wrap the process under xvfb so the browser still
+// runs as a real, headed window on a virtual display rather than headless.
+const HEADFUL = true;
 
 // Authenticated sessions: cookies are persisted to this file so a user can log
 // in once (via set_auth / a real browser) and have the session reused across
@@ -162,29 +162,17 @@ async function launchCamoufox(latest: boolean): Promise<Browser> {
     opts.executablePath = CUSTOM_CAMOUFOX_BINARY;
     console.error(`[carsales-mcp] Using custom Camoufox binary: ${CUSTOM_CAMOUFOX_BINARY}`);
   }
-  return firefox.launch({ ...opts, headless: !HEADFUL });
+  return firefox.launch({ ...opts, headless: false });
 }
 
-async function launchChromium(): Promise<Browser> {
-  const args = [
-    '--disable-blink-features=AutomationControlled',
-    '--no-sandbox',
-    '--disable-dev-shm-usage',
-  ];
-  if (CAPTCHA_SOLVER === 'buster' && BUSTER_EXT) {
-    args.push(`--load-extension=${BUSTER_EXT}`, `--disable-extensions-except=${BUSTER_EXT}`);
-    console.error('[carsales-mcp] CAPTCHA solver: Buster extension loaded (audio challenges).');
-  }
-  return chromium.launch({ channel: 'chromium', args, headless: !HEADFUL });
-}
-
-// Ordered fallback chain. Default is Camoufox (best anti-fingerprint engine) →
-// hardened Chromium as the reliable fallback. The jo-inc build ('joinc') is kept
-// only as an explicit opt-in: it is the hardest to fingerprint but least stable.
+// Ordered fallback chain. Both are anti-detect Firefox forks. Camoufox is the
+// default (stable, C++-patched). The jo-inc build ('joinc') is the hardest to
+// fingerprint but least stable, so it is tried last as an explicit opt-in. There
+// is deliberately no Chromium fallback: a real, headed, anti-detect Firefox is the
+// only path consistent with this tool's stealth purpose.
 function engineOrder(): Engine[] {
-  if (ENGINE === 'chromium') return ['chromium'];
-  if (ENGINE === 'camoufox') return ['camoufox', 'chromium'];
-  return ['joinc', 'camoufox', 'chromium'];
+  if (ENGINE === 'joinc') return ['joinc', 'camoufox'];
+  return ['camoufox', 'joinc'];
 }
 
 async function getBrowser(): Promise<Browser> {
@@ -201,12 +189,6 @@ async function getBrowser(): Promise<Browser> {
   }
   for (const step of engineOrder()) {
     try {
-      if (step === 'chromium') {
-        browser = await launchChromium();
-        activeEngine = 'chromium';
-        console.error('[carsales-mcp] Using hardened Chromium engine.');
-        return browser;
-      }
       const latest = step === 'joinc';
       browser = await launchCamoufox(latest);
       activeEngine = step;
@@ -223,21 +205,17 @@ async function getBrowser(): Promise<Browser> {
 }
 
 function baseContextOptions(): any {
-  // IMPORTANT: the UA must match the engine. Camoufox is Firefox-based, so a
-  // Chrome UA on Firefox is a classic fingerprint mismatch that trips anti-bot.
+  // IMPORTANT: the UA must match the engine. Camoufox and joinc are both
+  // Firefox-based, so a Chrome UA on Firefox is a classic fingerprint mismatch
+  // that trips anti-bot. Chromium was removed, so there is never a Chrome UA.
   const firefoxUA =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0';
-  const chromeUA =
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-  const opts: any = {
-    userAgent: isFirefox() ? firefoxUA : chromeUA,
+  return {
+    userAgent: firefoxUA,
     locale: 'en-AU',
     timezoneId: 'Australia/Sydney',
+    viewport: null,
   };
-  // Firefox (Camoufox) does not support setDefaultViewport; disable it.
-  if (!isFirefox()) opts.viewport = { width: 1366, height: 900 };
-  else opts.viewport = null;
-  return opts;
 }
 
 async function newContext(): Promise<BrowserContext> {
