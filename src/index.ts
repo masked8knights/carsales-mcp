@@ -499,6 +499,48 @@ server.tool(
 );
 
 server.tool(
+  'open_browser',
+  'Open the shared Camoufox browser to a URL (default carsales.com.au) and leave it ' +
+    'open so you can log in by hand. Use this to build a warm, authenticated session ' +
+    'by reaching into the visible browser window and signing in, then call auth_status ' +
+    'to confirm. Any login/clearance cookies earned are persisted for reuse. This is the ' +
+    'recommended login path - it never asks the bot to type your password.',
+  {
+    url: z
+      .string()
+      .optional()
+      .default('https://www.carsales.com.au/')
+      .describe('URL to open (default carsales.com.au home). Use the login page to sign in.'),
+    waitSeconds: z
+      .number()
+      .optional()
+      .default(0)
+      .describe('How long to leave the window open for manual login before checking cookies (0 = return immediately).'),
+  },
+  async ({ url, waitSeconds }) => {
+    const page = await getPage();
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    } catch (e) {
+      return { content: [{ type: 'text', text: 'Failed to open ' + url + ': ' + (e as Error).message }] };
+    }
+    if (waitSeconds > 0) await new Promise((r) => setTimeout(r, waitSeconds * 1000));
+    await saveSession();
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            'The shared browser is open at ' + url + '. ' +
+            'Log in in the visible Camoufox window, then call auth_status to confirm. ' +
+            (waitSeconds > 0 ? 'Session cookies were captured after the wait period.' : 'Returned immediately; call auth_status after you finish logging in.'),
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'save_vehicle',
   'Save/watchlist a carsales listing to YOUR account (requires an authenticated session ' +
     'via set_auth). Best-effort: clicks the Save/Watchlist control on the listing page. ' +

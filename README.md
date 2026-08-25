@@ -111,10 +111,16 @@ with a short reason.
 
 ### Login and authenticated actions
 Some actions need an account: `save_vehicle` (watchlist), `make_offer` (contact seller). Read the
-warning at the top before using them. You log in by importing cookies from your own browser (never
-your password). See `set_auth` and `auth_status`.
+warning at the top before using them. Two supported login paths, **never your password**:
 
-How to export your carsales cookies:
+**Path A — log in by hand in the visible browser (recommended).** The browser runs headful, so you can
+see it. Call `open_browser` (it opens a URL and leaves the window up), reach in and log in to
+carsales.com.au in that window, then call `auth_status` to confirm. The server persists the session
+cookies — including the DataDome clearance cookie — for reuse, so a warm, authenticated session is the
+best way to reduce blocks. This never asks the bot to type your password.
+
+**Path B — import cookies from your own browser.** See `set_auth` and `auth_status`:
+
 1. Log into carsales.com.au in your normal browser (Chrome, Edge or Firefox).
 2. Open DevTools (F12), Application tab, Cookies, then `https://www.carsales.com.au`.
 3. Copy all rows (or use an extension like Cookie-Editor, Export to JSON). You need the array of
@@ -123,8 +129,8 @@ How to export your carsales cookies:
 5. Call `auth_status` to confirm. If it says it could not confirm login, the account page is likely
    bot-blocked from this network, so log in again in the browser and re-export.
 
-We deliberately do not support typing your password into the bot or automating the login form. Cookie
-import is the only path, so your password never touches this server.
+We deliberately do not support typing your password into the bot or automating the login form. Either
+manual login or cookie import is the only path, so your password never touches this server.
 
 ### Offer safety (enforced, not optional)
 `make_offer` will never send the same offer twice. Before any send it checks a persistent, append-only

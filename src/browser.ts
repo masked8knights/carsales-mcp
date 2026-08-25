@@ -7,23 +7,13 @@ import { spawn } from 'node:child_process';
 export type { Page };
 export type { Browser, BrowserContext };
 
-// Engine selection. The default is the Camoufox browser built by jo-inc
-// (https://github.com/jo-inc/camofox-browser), the hardest-to-fingerprint
-// option. If it fails to launch we fall back to the camoufox-js packaged
-// stable build, and finally to a hardened Chromium. Set CARS_ENGINE to pin a
-// tier: 'camoufox' (default) | 'joinc'. Chromium was removed: it is far easier to
-// fingerprint (DataDome's whole point), so it is never a safe fallback for a
-// tool whose job is stealth. Only the anti-detect Firefox engines are used.
+// Engine selection. Camoufox (camoufox-js, a C++-patched Firefox that spoofs
+// navigator.webdriver, WebGL, hardware concurrency, AudioContext, WebRTC) is the
+// default, with the jo-inc build ('joinc', https://github.com/jo-inc/camofox-browser)
+// as the hardest-to-fingerprint opt-in. Chromium was removed entirely: vanilla
+// Chromium is trivially fingerprinted and would contradict the tool's stealth
+// purpose, so it is never a safe fallback. Set CARS_ENGINE to pin one tier.
 type Engine = 'joinc' | 'camoufox';
-/**
- * Default engine. We default to the anti-detect Camoufox engine (Camoufox-js,
- * a C++-patched Firefox that spoofs navigator.webdriver, WebGL, hardware
- * concurrency, AudioContext, WebRTC) because bot-protection (Cloudflare,
- * DataDome) is largely fingerprint-based: Gumtree's Cloudflare block, for
- * example, is passed by Camoufox but not by vanilla Chromium. Chromium is kept
- * as a single, reliable fallback (the browser auto-recovers if Camoufox drops).
- * Set CARS_ENGINE to pin one.
- */
 const ENGINE_RAW = (process.env.CARS_ENGINE || 'camoufox').toLowerCase();
 const ENGINE: Engine = ENGINE_RAW === 'joinc' ? 'joinc' : 'camoufox';
 
@@ -31,13 +21,9 @@ const ENGINE: Engine = ENGINE_RAW === 'joinc' ? 'joinc' : 'camoufox';
 // fetched yourself from github.com/jo-inc/camofox-browser releases).
 const CUSTOM_CAMOUFOX_BINARY = process.env.CARS_CAMOUFOX_BINARY || '';
 
-// The engine that actually launched (not the configured constant). The fallback
-// chain may land on Chromium even when CARS_ENGINE=camoufox, so UA selection must
-// read this, not the constant - a mismatched UA on the wrong engine is a classic
-// fingerprint tell that anti-bot (DataDome/Cloudflare) flags instantly.
+// The engine that actually launched, so the log and active-engine state reflect
+// reality across the fallback chain (camoufox -> joinc).
 let activeEngine: Engine | null = null;
-
-
 
 export function decodeEntities(s: string): string {
   return s
@@ -61,23 +47,18 @@ const MIN_DELAY = Number(process.env.CARS_MIN_DELAY || 1500);
 const MAX_RETRIES = Number(process.env.CARS_RETRIES || 3);
 const BACKOFF = Number(process.env.CARS_BACKOFF || 2000);
 
-// Optional FOSS CAPTCHA help. The only free, open-source solver we wire in is
-// Buster (https://github.com/dessant/buster, MIT) solves hCaptcha/reCAPTCHA
-// *audio* challenges locally via the browser's Web Speech API (no paid service).
-// It loads as a Chromium extension, so it only applies when ENGINE=chromium and
-// the user points CARS_BUSTER_EXTENSION at their installed copy. It does NOT
-// defeat behavioural bot-protection like DataDome (carsales' own stack). That
-// relies on avoidance (residential IP + Camoufox + proxy). Default: off.
+// Optional FOSS CAPTCHA help. Buster (https://github.com/dessant/buster, MIT)
+// solves hCaptcha/reCAPTCHA *audio* challenges locally via the browser's Web
+// Speech API (no paid service). The build must match the Firefox engine and you
+// must point CARS_BUSTER_EXTENSION at your installed copy. It does NOT defeat
+// behavioural bot-protection like DataDome - that relies on avoidance (residential
+// IP + headful Camoufox). Opt-in, default off.
 const CAPTCHA_SOLVER = (process.env.CARS_CAPTCHA_SOLVER || 'none').toLowerCase();
 const BUSTER_EXT = process.env.CARS_BUSTER_EXTENSION || '';
 
-// Headful is now mandatory. Headless browsers are one of the strongest bot signals
-// DataDome scores (a headful real browser has a far richer, more believable
-// fingerprint). The tradeoff is it needs a display - on WSLg / a desktop this shows
-// a window you can watch (the same affordance browser-use's UI gives). For a truly
-// headless server (CI/Docker), wrap the process under xvfb so the browser still
-// runs as a real, headed window on a virtual display rather than headless.
-const HEADFUL = true;
+// Headful is mandatory (headless is one of the strongest bot signals DataDome
+// scores, and a headed browser needs a display - WSLg/desktop shows a window;
+// a headless server should wrap the process in xvfb, not run headless).
 
 // Authenticated sessions: cookies are persisted to this file so a user can log
 // in once (via set_auth / a real browser) and have the session reused across
@@ -140,7 +121,7 @@ function camoufoxCacheDir(): string {
   return process.env.CAMOUFOX_INSTALL_DIR || path.join(os.homedir(), '.cache', 'camoufox');
 }
 
-async function ensureCamoufoxBinary(_latest = false): Promise<void> {
+async function ensureCamoufoxBinary(): Promise<void> {
   if (fs.existsSync(camoufoxCacheDir())) return;
   console.error('[carsales-mcp] Downloading Camoufox browser (one-time, ~700MB)...');
   await new Promise<void>((resolve) => {
@@ -153,8 +134,8 @@ async function ensureCamoufoxBinary(_latest = false): Promise<void> {
   });
 }
 
-async function launchCamoufox(latest: boolean): Promise<Browser> {
-  await ensureCamoufoxBinary(latest);
+async function launchCamoufox(): Promise<Browser> {
+  await ensureCamoufoxBinary();
   const mod: any = await import('camoufox-js');
   const { firefox } = await import('playwright');
   const opts: any = await mod.launchOptions({});
@@ -189,8 +170,7 @@ async function getBrowser(): Promise<Browser> {
   }
   for (const step of engineOrder()) {
     try {
-      const latest = step === 'joinc';
-      browser = await launchCamoufox(latest);
+      browser = await launchCamoufox();
       activeEngine = step;
       console.error(`[carsales-mcp] Using Camoufox engine (${step}).`);
       return browser;
@@ -260,10 +240,10 @@ export async function getPage(): Promise<Page> {
     return newPageWithProxy();
   }
   // Transparently recover from a browser / context / page that died mid-run
-  // (Chromium and Camoufox can both drop the page after many navigations). The
-  // old code reused the dead shared page, so every subsequent call errored with
-  // "Target page, context or browser has been closed" and the client retried in a
-  // loop. Rebuild on demand instead of returning a corpse.
+  // (Camoufox can drop the page after many navigations). The old code reused the
+  // dead shared page, so every subsequent call errored with "Target page, context
+  // or browser has been closed" and the client retried in a loop. Rebuild on
+  // demand instead of returning a corpse.
   if (browser && !browser.isConnected()) {
     console.error('[carsales-mcp] Shared browser died; resetting.');
     browser = null;
@@ -293,10 +273,6 @@ export async function getPage(): Promise<Page> {
     sharedPage = await sharedContext.newPage();
     return sharedPage;
   }
-}
-
-export async function currentContext(): Promise<BrowserContext | null> {
-  return sharedContext;
 }
 
 async function loadCookies(): Promise<any[]> {
