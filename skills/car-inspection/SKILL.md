@@ -1,9 +1,9 @@
 ---
 name: car-inspection
-description: Inspect a carsales (or Facebook Marketplace) vehicle listing using its photos. Use when the user wants to know if a car looks good, has damage/defects, rust, accidents, or is a bad deal beyond price. Pairs with the carsales-mcp tools get_listing_details / fetch (includeImages=true) which return the listing photos as image blocks the vision model can see.
+description: JUDGE a single vehicle listing from its photos (a car the user already has, or one produced by the carsales-search skill). Use when the user wants to know if a car looks good, has damage/defects, rust, accidents, or is a bad deal beyond price — i.e. verify quality/condition of a SPECIFIC listing. Pairs with get_listing_details(includeImages=true) for photos. Discovery/search is the carsales-search skill's job; this one is verification of a chosen listing.
 ---
 
-# Car Inspection
+# Car Inspection (verify a listing)
 
 You are helping a buyer assess a used vehicle from its listing photos and metadata.
 The `carsales-mcp` server can return the listing's photos as **image blocks**

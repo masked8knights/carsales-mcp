@@ -147,8 +147,12 @@ excluded: `MARKETPLACES=ebay,depop,poshmark`. This server is the single source o
 never calls secondhand-mcp, so there is no overlap from this side.
 
 ## Bundled skills (token-aware)
-This repo ships two Agent Skills in `skills/`, symlinked into `.opencode/skills/` for auto-discovery.
+This repo ships Agent Skills in `skills/`, symlinked into `.opencode/skills/` for auto-discovery.
 Each has a lean `SKILL.md` that loads chapter files on demand, keeping context small.
+- `carsales-search`: how to run precise carsales searches — maps filters onto carsales' built-in
+  URL facets (state, bodyStyle, transmission, fuelType, condition, postcode, radius) vs the filters
+  the tool applies in-memory (price, year, odometer, sort), and how to combine with preferences and
+  good-deal flags.
 - `car-inspection`: assess a listing's photos for damage, rust, accident signs and VIN or odometer
   mismatches. Pairs with `get_listing_details(includeImages: true)`.
 - `buyers-guide`: beginner's guide to buying a used car in Australia (budgeting, dealer vs private,

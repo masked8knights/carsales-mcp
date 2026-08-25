@@ -36,11 +36,14 @@ history, and clear consumer rights.
 - `chapters/05_rights-scams.md` — ACL guarantees, statutory warranties, common scams
 - `cheatsheet.md` — one-page decision checklist
 
-## How it ties to the tools
-1. `search_all_cars({ make, model, state, location })` → shortlist across carsales + Facebook.
-2. `get_listing_details({ listingId/url, includeImages: true })` → photos + structured data.
-3. Apply the `car-inspection` skill to the photos (defects, rust, accident signs).
-4. Use THIS guide for the buying/verification process (PPSR, rego, rights, finance).
+## How it ties to the other skills (no overlap)
+This guide is only the **buying process** (budgeting, PPSR, rego, rights, finance, scams).
+The other two skills own the distinct stages — do not re-run their steps here:
+1. **Discover** → the `carsales-search` skill (`search_cars` / `search_all_cars`).
+2. **Verify a listing** → the `car-inspection` skill (`get_listing_details(includeImages:true)`,
+   judging photos for rust/damage/accident signs).
+3. **Buy** → THE steps THIS guide covers: PPSR/written-off/finance checks, rego, consumer
+   rights, inspection before purchase, scams to avoid.
 
 ## Sources (authoritative, Australian)
 Curated from: Moneysmart (ASIC) "Buying a car", ACCC "New and second-hand cars",
