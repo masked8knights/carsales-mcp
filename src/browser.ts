@@ -2,7 +2,7 @@ import { Browser, BrowserContext, Page } from 'playwright';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 
 export type { Page };
 export type { Browser, BrowserContext };
@@ -140,9 +140,14 @@ async function launchCamoufox(): Promise<Browser> {
   // Optional offscreen display. Set CARS_DISPLAY to a live X display (e.g. an Xvfb
   // virtual framebuffer like ":99") to keep the browser fully headed/fingerprinted
   // but INVISIBLE - the real window renders on the virtual display instead of your
-  // screen. This is the "use it but don't see it" mode. Requires that display to be
-  // running (e.g. `Xvfb :99 &`). Left unset, the window shows on the real display.
+  // screen. This is the "use it but don't see it" mode.
   const DISPLAY_OVERRIDE = process.env.CARS_DISPLAY || '';
+  if (DISPLAY_OVERRIDE) {
+    // Fail closed: verify the intended offscreen display is reachable BEFORE
+    // launching, or throw (so we never fall back to the real desktop and pop a
+    // window on the user's screen). xdpyinfo exits non-zero if the display is down.
+    execFileSync('xdpyinfo', ['-display', DISPLAY_OVERRIDE], { stdio: 'ignore' });
+  }
   const opts: any = await mod.launchOptions({
     os: 'windows',
     geoip: 'AU',
@@ -561,9 +566,25 @@ function cardFromJsonLd(item: any): Partial<ListingCard> {
     price: item.offers?.price != null ? Number(item.offers.price) : null,
     odometer: mileage != null ? Number(mileage) : null,
     bodyType: item.bodyType || null,
+    transmission: normalizeTransmission(item.vehicleTransmission),
     image: images[0] ?? null,
     images: images.slice(0, 10),
   };
+}
+
+// Normalise carsales' transmission strings (from JSON-LD vehicleTransmission or a
+// facet chip) into a clean label; drop title-derived keyword guesses that are
+// wrong (e.g. "Manual AWD" in a model name).
+function normalizeTransmission(v: unknown): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const low = s.toLowerCase();
+  if (/auto/.test(low)) return 'Automatic';
+  if (/manual/.test(low)) return 'Manual';
+  if (/cvt|continuously variable/.test(low)) return 'CVT';
+  if (/semi-?auto|tiptronic|dct|dual.?clutch/.test(low)) return 'Semi-automatic';
+  return null;
 }
 
 // HTML enrichment for fields the search JSON-LD does not include. Scans plain

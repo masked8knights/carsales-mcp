@@ -27,6 +27,17 @@ if ! xdpyinfo -display "$CARS_DISPLAY" >/dev/null 2>&1; then
   done
 fi
 
+# Fail closed: if we were asked to run offscreen but the virtual display is NOT
+# actually reachable, abort rather than let Camoufox fall back to the real desktop
+# (which is what was popping windows on the user's screen).
+if ! xdpyinfo -display "$CARS_DISPLAY" >/dev/null 2>&1; then
+  echo "[carsales-mcp] ERROR: offscreen display $CARS_DISPLAY is not reachable even after starting Xvfb. " >&2
+  echo "[carsales-mcp] Install xvfb (apt-get install -y xvfb) or run on a machine with a virtual display. " >&2
+  echo "[carsales-mcp] NOT launching to avoid showing a window on the desktop. " >&2
+  exit 1
+fi
+
 cd "$REPO"
 echo "[carsales-mcp] Running server headed-offscreen on $CARS_DISPLAY ..." >&2
+export DISPLAY="$CARS_DISPLAY"
 exec node dist/index.js
