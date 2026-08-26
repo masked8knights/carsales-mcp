@@ -39,5 +39,12 @@ fi
 
 cd "$REPO"
 echo "[carsales-mcp] Running server headed-offscreen on $CARS_DISPLAY ..." >&2
+
+# Force the browser onto the virtual display only. Unset any inherited real
+# desktop display (WSLg sets DISPLAY=:0 / WAYLAND_DISPLAY) so Camoufox can never
+# leak a window onto the user's screen.
+unset DISPLAY WAYLAND_DISPLAY
 export DISPLAY="$CARS_DISPLAY"
+export WAYLAND_DISPLAY=""
+
 exec node dist/index.js

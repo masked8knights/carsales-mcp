@@ -147,6 +147,13 @@ async function launchCamoufox(): Promise<Browser> {
     // launching, or throw (so we never fall back to the real desktop and pop a
     // window on the user's screen). xdpyinfo exits non-zero if the display is down.
     execFileSync('xdpyinfo', ['-display', DISPLAY_OVERRIDE], { stdio: 'ignore' });
+    // Force the browser onto the virtual display ONLY. Clear any inherited real
+    // desktop display (WSLg exports DISPLAY=:0 / WAYLAND_DISPLAY) so Camoufox can
+    // never leak a window onto the user's screen via a stale parent env.
+    delete process.env.DISPLAY;
+    delete process.env.WAYLAND_DISPLAY;
+    process.env.DISPLAY = DISPLAY_OVERRIDE;
+    console.error(`[carsales-mcp] Rendering browser offscreen on ${DISPLAY_OVERRIDE} (CARS_DISPLAY).`);
   }
   const opts: any = await mod.launchOptions({
     os: 'windows',
@@ -155,9 +162,6 @@ async function launchCamoufox(): Promise<Browser> {
     ...(HUMANIZE ? { humanize: true } : {}),
     ...(DISPLAY_OVERRIDE ? { virtual_display: DISPLAY_OVERRIDE } : {}),
   });
-  if (DISPLAY_OVERRIDE) {
-    console.error(`[carsales-mcp] Rendering browser offscreen on ${DISPLAY_OVERRIDE} (CARS_DISPLAY).`);
-  }
   // Privacy / tracking: block third-party cookies AND enable Firefox's Enhanced
   // Tracking Protection, but keep FIRST-PARTY cookies. First-party cookies are
   // essential here - the DataDome clearance cookie and the login session are both
