@@ -110,8 +110,12 @@ server.tool(
     'filtered in-memory from the listing cards. Returns matching listings with price, year, ' +
     'odometer, location and a link.',
   {
-    make: z.string().describe('Car make, e.g. "Toyota", "Mazda", "Tesla"'),
+    make: z
+      .string()
+      .optional()
+      .describe('Car make, e.g. "Toyota", "Mazda", "Tesla". Omit to search ALL makes.'),
     model: z.string().optional().describe('Car model, e.g. "Camry", "CX-5"'),
+    keyword: z.string().optional().describe('Free-text keyword search'),
     state: z
       .string()
       .optional()
@@ -131,7 +135,6 @@ server.tool(
       .describe('Listing condition/type'),
     badge: z.string().optional().describe('Trim/badge, e.g. "GT", "Ascent", "RS"'),
     colour: z.string().optional().describe('Exterior colour, e.g. "white", "black"'),
-    keyword: z.string().optional().describe('Free-text keyword search'),
     minPrice: z.number().optional().describe('Minimum price in AUD'),
     maxPrice: z.number().optional().describe('Maximum price in AUD'),
     minYear: z.number().optional().describe('Minimum build year'),
@@ -152,6 +155,17 @@ server.tool(
     limit: z.number().optional().default(25).describe('Max results to return'),
   },
   async (params) => {
+    // make/model/keyword are all optional: carsales supports a brand-agnostic
+    // search, so e.g. state + transmission + maxPrice alone is a valid query.
+    // Guard against a genuinely empty call that would fetch the whole site.
+    const keys: (keyof SearchParams)[] = ['make', 'model', 'keyword', 'state', 'bodyStyle', 'transmission', 'fuelType', 'condition', 'badge', 'colour', 'minPrice', 'maxPrice', 'minYear', 'maxYear', 'maxOdometer', 'postcode'];
+    if (!keys.some((k) => (params as any)[k] != null)) {
+      return {
+        content: [
+          { type: 'text', text: 'Provide at least one filter (make, model, keyword, state, transmission, price, etc.).' },
+        ],
+      };
+    }
     const url = buildSearchUrl(params as SearchParams);
     try {
       let cards = await searchCarsDeep(params as SearchParams);
@@ -234,7 +248,9 @@ const DEEP_PAGES = Math.max(0, Number(process.env.CARS_DEEP_PAGES || 6));
 
 // Fetch page 1, then (when a price filter is active and the result is thin)
 // keep fetching further pages and re-filtering until we have enough matches or
-// hit the page cap. Deduped by listing id.
+// hit the page cap. Deduped by listing id. A brand-agnostic (no make) search
+// returns far more results than a single-make one, so the deep scan is bounded
+// much lower there to avoid grinding pages (which stalls + triggers blocks).
 async function searchCarsDeep(p: SearchParams): Promise<ListingCard[]> {
   const hasPrice = p.minPrice != null || p.maxPrice != null;
   const fetch = hasPrice ? { ...p, serverSort: p.serverSort || 'Odometer' } : p;
@@ -242,8 +258,10 @@ async function searchCarsDeep(p: SearchParams): Promise<ListingCard[]> {
   if (!hasPrice) return cards;
   const target = p.limit ?? 25;
   const startPage = p.page ?? 1;
+  // All-makes = a big result set; scanning many pages is slow and block-prone.
+  const maxPages = p.make ? DEEP_PAGES : Math.min(2, DEEP_PAGES);
   let page = startPage + 1;
-  while (cards.length < target && page <= startPage + DEEP_PAGES) {
+  while (cards.length < target && page <= startPage + maxPages) {
     let more: ListingCard[];
     try {
       more = await searchCars({ ...fetch, page });

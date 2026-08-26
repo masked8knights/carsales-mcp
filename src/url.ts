@@ -1,5 +1,5 @@
 export interface SearchParams {
-  make: string;
+  make?: string;
   model?: string;
   state?: string;
   bodyStyle?: string;
@@ -88,7 +88,9 @@ export function buildSearchUrl(p: SearchParams): string {
   else if (p.condition === 'private') segments.push('private');
   else if (p.condition === 'dealer') segments.push('dealer');
 
-  segments.push(slug(p.make));
+  // make is optional now: omit it to search ALL makes (brand-agnostic). Only push
+  // real segments so the URL stays clean (no empty path part).
+  if (p.make) segments.push(slug(p.make));
   if (p.model) segments.push(slug(p.model));
 
   if (p.state) {
