@@ -258,8 +258,10 @@ async function searchCarsDeep(p: SearchParams): Promise<ListingCard[]> {
   if (!hasPrice) return cards;
   const target = p.limit ?? 25;
   const startPage = p.page ?? 1;
-  // All-makes = a big result set; scanning many pages is slow and block-prone.
-  const maxPages = p.make ? DEEP_PAGES : Math.min(2, DEEP_PAGES);
+  // All-makes result sets are large, so cheap cars can sit very deep. The user
+  // prefers completeness over speed here, so scan the full page budget; each page
+  // is fetched politely (humanised, with backoff/cooldown) rather than fast.
+  const maxPages = p.make ? DEEP_PAGES : Math.max(DEEP_PAGES, 10);
   let page = startPage + 1;
   while (cards.length < target && page <= startPage + maxPages) {
     let more: ListingCard[];
