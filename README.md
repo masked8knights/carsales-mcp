@@ -125,35 +125,26 @@ odometer-for-age and price-per-year. Listings flagged GREAT or GOOD are marked i
 with a short reason.
 
 ### Login and authenticated actions
-Some actions need an account: `save_vehicle` (watchlist), `make_offer` (contact seller). Read the
-warning at the top before using them. Two supported login paths, **never your password**. Both apply to
-**any site the server drives** — carsales, Gumtree and Facebook — because there is **one shared headed
-Camoufox browser**; its cookies are persisted per-domain in `CARS_COOKIE_FILE`, so logging in to a site
-in that window lets the AI act on it as a logged-in user.
+Some actions need an account: `save_vehicle` / `save_listing` (site save), `make_offer` (contact seller).
+Read the warning at the top before using them. The supported login path is **never your password** and
+applies to **any site the server drives** — carsales, Gumtree and Facebook — because there is **one
+shared headed Camoufox browser**; its cookies are persisted per-domain in `CARS_COOKIE_FILE`, so logging
+in to a site in that window lets the AI act on it as a logged-in user for as long as the file persists.
 
-**Path A — log in by hand in the visible browser (recommended).** The browser runs headful, so you can
-see it. Call `open_browser` with the site's login URL (it opens it and leaves the window up), reach in
-and log in in that window, then call `auth_status` to confirm. The server persists that site's session
-cookies — including the DataDome clearance cookie for carsales — for reuse, so a warm, authenticated
-session is the best way to reduce blocks. `auth_status` reports the login state for carsales, Gumtree
-and Facebook at once. This never asks the bot to type your password.
+**Log in by hand in the visible browser (the only path).** The browser runs headful, so you see it. Call
+`open_browser` with the site's login URL (it opens it and leaves the window up), reach in and log in in
+that window, then call `auth_status` to confirm. The server persists that site's session cookies —
+including the DataDome clearance cookie for carsales — for reuse, so a warm, authenticated logged-in
+session is the best way to reduce blocks and to use site saves/offers. `auth_status` reports the login
+state for carsales, Gumtree and Facebook at once. This never asks the bot to type your password.
 
-**Run it but keep it invisible:** set `CARS_DISPLAY` to a live X display (e.g. an Xvfb `:99`) and the
+**Run it but keep it invisible:** set `CARS_DISPLAY` to a live X display (e.g. `Xvfb :99`) and the
 browser stays fully headed and human-behaved but renders offscreen — the AI can drive it while you never
-see a window.
+see a window. (`CARS_DISPLAY` needs that display to be running first.)
 
-**Path B — import cookies from your own browser.** See `set_auth` and `auth_status`:
-
-1. Log into carsales.com.au in your normal browser (Chrome, Edge or Firefox).
-2. Open DevTools (F12), Application tab, Cookies, then `https://www.carsales.com.au`.
-3. Copy all rows (or use an extension like Cookie-Editor, Export to JSON). You need the array of
-   cookie objects: `[{ "name": "...", "value": "...", "domain": "...", ... }, ...]`.
-4. Paste that array as the `cookies` argument to `set_auth`, or save it to `CARS_COOKIE_FILE`.
-5. Call `auth_status` to confirm. If it says it could not confirm login, the account page is likely
-   bot-blocked from this network, so log in again in the browser and re-export.
-
-We deliberately do not support typing your password into the bot or automating the login form. Either
-manual login or cookie import is the only path, so your password never touches this server.
+We deliberately do not support typing your password into the bot or automating the login form, and there
+is no cookie-paste tool — `open_browser` + manual sign-in is the only path, so your password never
+touches this server.
 
 ### Offer safety (enforced, not optional)
 `make_offer` will never send the same offer twice. Before any send it checks a persistent, append-only

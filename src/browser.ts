@@ -339,17 +339,7 @@ export async function getCookiesAll(): Promise<any[]> {
   }
 }
 
-/** Import cookies (e.g. exported from your own logged-in browser) for reuse. */
-export async function setAuthCookies(cookies: any[]): Promise<void> {
-  if (!Array.isArray(cookies)) throw new Error('cookies must be an array');
-  fs.mkdirSync(path.dirname(COOKIE_FILE), { recursive: true });
-  fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2));
-  fs.chmodSync(COOKIE_FILE, 0o600); // cookies are sensitive, restrict access
-}
 
-export function authCookieFile(): string {
-  return COOKIE_FILE;
-}
 
 /** True when a page is a DataDome / bot-protection challenge, not real content. */
 export function isBlocked(html: string): boolean {

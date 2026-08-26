@@ -7,9 +7,7 @@ import {
   closeBrowser,
   fetchHtml,
   downloadImages,
-  setAuthCookies,
   saveSession,
-  authCookieFile,
   getCookiesAll,
   ListingCard,
   Page,
@@ -455,36 +453,6 @@ function highRiskBanner(action: string, planned: string[]): string {
 }
 
 server.tool(
-  'set_auth',
-  'Import a carsales.com.au login session by pasting cookies exported from your own ' +
-    'browser (so the server can save vehicles, make offers, and contact sellers). ' +
-    'Pass the cookies array from DevTools > Application > Cookies (or a cookie ' +
-    'export extension). Stored at: ' + authCookieFile() + '.',
-  {
-    cookies: z
-      .array(z.any())
-      .describe('Array of cookie objects (name, value, domain, path, ...). Typically from a browser cookie export.'),
-  },
-  async ({ cookies }) => {
-    try {
-      await setAuthCookies(cookies);
-    } catch (e) {
-      return { content: [{ type: 'text', text: 'Failed to save cookies: ' + (e as Error).message }] };
-    }
-    return {
-      content: [
-        {
-          type: 'text',
-          text:
-            `Saved ${cookies.length} cookie(s) to ${authCookieFile()}. ` +
-            `The session will be used on subsequent requests. Re-run auth_status to confirm it works.`,
-        },
-      ],
-    };
-  },
-);
-
-server.tool(
   'auth_status',
   'Check whether the current session is logged in across the sites the server drives ' +
     '(carsales, Facebook, Gumtree) - so authenticated actions like save_vehicle / ' +
@@ -566,9 +534,10 @@ server.tool(
 
 server.tool(
   'save_vehicle',
-  'Save/watchlist a carsales listing to YOUR account (requires an authenticated session ' +
-    'via set_auth). Best-effort: clicks the Save/Watchlist control on the listing page. ' +
-    'Requires confirm: true (human-in-the-loop) before any account action is taken.',
+  'Save/watchlist a carsales listing to YOUR account (requires an authenticated session for ' +
+    'that site - log in via open_browser). Best-effort: clicks the Save/Watchlist control on the ' +
+    'listing page. Also saves it locally. Requires confirm: true (human-in-the-loop) before any ' +
+    'account action is taken.',
   {
     listingId: z.string().optional().describe('Listing id, e.g. OAG-AD-26099426'),
     url: z.string().optional().describe('Full carsales listing URL'),
