@@ -69,13 +69,23 @@ to the **car-inspection** skill (which calls `get_listing_details(includeImages:
 and inspects photos for rust/damage) and check trust with `check_vehicle` /
 `dealer_info`. This skill stops at "here are the best candidates."
 
+## Track candidates locally (works across all sites)
+The server can save any listing and watch it, so candidates don't get lost:
+- `save_listing({ listingId/url, note, siteNative:true })` — save a car locally (and try the site's
+  own Save control). Works for carsales, Gumtree and Facebook.
+- `list_saved()` / `remove_saved({ key/url })` — view / remove saved cars.
+- `check_saved()` — re-fetch saved cars and report a PRICE DROP or SOLD/withdrawn.
+- `check_inbox({ site })` — check for seller replies (best-effort, needs login for that site).
+
 ## Worked example — "decent cheap car, no rust, under $4k, NSW near Sydney"
 1. `get_preferences()` — if `no rust` / `maxPrice` already learned, they auto-apply.
 2. `search_cars({ make:"Mazda", state:"nsw", postcode:"2000", radius:50, condition:"used", maxPrice:4000, sort:"price_low", limit:10 })`
    (repeat per plausible make if the user did not name one: Toyota, Mazda, Hyundai, Suzuki…).
-3. For each strong hit, `get_listing_details({ listingId, includeImages:true })` and run
+3. `save_listing({ listingId, note:"no rust - verify underbody" })` for each promising candidate so it's tracked.
+4. For a strong hit, `get_listing_details({ listingId, includeImages:true })` and run
    `car-inspection` on the photos to check for rust/damage before recommending.
-4. `remember_preference({kind:"reject", listingId, reason})` for any car they turn down.
+5. `remember_preference({kind:"reject", listingId, reason})` for any car they turn down;
+   `check_saved()` to catch a price drop or if the one you like gets sold.
 
 ## Honest limits
 - DataDome may challenge after several searches from one IP. If `search_cars`

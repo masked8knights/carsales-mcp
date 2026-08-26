@@ -71,6 +71,21 @@ Dump a carsales search to CSV with no external service.
   change versus the last check.
 - Optional: set `CARS_WATCH_WEBHOOK` to POST new listings to a free ntfy, Discord or Slack webhook.
 
+### Saved cars (local tracker, all sites)
+- `save_listing` saves ANY listing (carsales / Gumtree / Facebook) **locally** (in `CARS_SAVED_FILE`,
+  default `~/.carsales-mcp/saved.json`), with an optional note, and also tries the site's own
+  Save/Watchlist control (best-effort, skippable with `siteNative: false`).
+- `list_saved` shows all locally saved listings with price and drop/sold status. `remove_saved` deletes one.
+- `check_saved` re-fetches every saved listing and reports **price drops** or that a listing now looks
+  **sold/withdrawn**. Because saved seeks are stored locally (not tied to a site API), this works
+  reliably across all three sites (FOSS, no paid service).
+
+### `check_inbox`
+Best-effort seller-reply / offer-response check. Opens the site's message inbox (carsales, Gumtree or
+Facebook) in the shared headed browser and reads what is visible. These sites expose **no stable
+message API**, so this drives the real inbox UI and is markup-dependent — log in to the site via
+`open_browser` first, and verify replies in your actual inbox before acting.
+
 ### `check_vehicle`
 Free vehicle trust check. Points at the official state-transport registration check (registration
 validity and written-off status) and attempts a best-effort automated lookup. Encumbrance (finance

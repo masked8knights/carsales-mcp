@@ -35,6 +35,16 @@ import {
 } from './watch.js';
 import { checkVehicle } from './vehicle.js';
 import { hasIdenticalOffer, hasRecentOffer, recordOffer } from './offers.js';
+import {
+  saveListing,
+  listSaved,
+  getSaved,
+  removeSaved,
+  applyCheck,
+  setSavedNote,
+  savedFile,
+  SaveSource,
+} from './saved.js';
 import { assessReliability, assessListingReliability, ReliabilityResult } from './reliability.js';
 import {
   applyPrefFilters,
@@ -615,13 +625,24 @@ server.tool(
         }
       }
       await saveSession();
+      // Also save locally so it is tracked for a price drop / sold state.
+      saveListing({
+        source: 'carsales',
+        id: listingIdFromUrl(target) || target,
+        url: target,
+        title: null,
+        price: null,
+        note: 'saved via save_vehicle',
+      });
       return {
         content: [
           {
             type: 'text',
-            text: clicked
-              ? `Clicked the Save control on ${target} (matched selector: ${hitSelector}; best-effort - confirm in your carsales account).`
-              : `Could not find a Save/Watchlist control on ${target}. Tried ${selectors.length} selectors - the page may require login or its markup changed.`,
+            text:
+              (clicked
+                ? `Clicked the Save control on ${target} (matched selector: ${hitSelector}; best-effort - confirm in your carsales account).`
+                : `Could not find a Save/Watchlist control on ${target}. Tried ${selectors.length} selectors - the page may require login or its markup changed.`) +
+              '\nSaved locally as well; run check_saved to watch for a price drop / sold state.',
           },
         ],
       };
@@ -633,13 +654,14 @@ server.tool(
 
 server.tool(
   'make_offer',
-  'Contact the seller / make an offer on a carsales listing (requires an authenticated ' +
-    'session via set_auth). Best-effort: opens the contact/enquire form and submits your ' +
-    'message. HIGH-RISK: contacts a real person and may involve money. Requires confirm: ' +
-    'true (human-in-the-loop) - the first call returns a warning and does nothing.',
+  'Contact the seller / make an offer on a listing (carsales, Gumtree or Facebook - best-effort, ' +
+    'requires an authenticated session for that site). Opens the contact/enquire/message form and ' +
+    'submits your message. HIGH-RISK: contacts a real person and may involve money. Requires ' +
+    'confirm: true (human-in-the-loop) - the first call returns a warning and does nothing. The ' +
+    'listing is also saved locally so you can track a reply later.',
   {
-    listingId: z.string().optional().describe('Listing id, e.g. OAG-AD-26099426'),
-    url: z.string().optional().describe('Full carsales listing URL'),
+    listingId: z.string().optional().describe('Listing id (any site)'),
+    url: z.string().optional().describe('Full listing URL (carsales / Gumtree / Facebook)'),
     message: z.string().describe('Message to send the seller'),
     price: z.number().optional().describe('Optional offer price in AUD'),
     confirm: z
@@ -664,9 +686,11 @@ server.tool(
       };
     }
     // Enforced guard: never send the same offer twice (identical, or any offer to
-    // the same listing within the cooldown). This CANNOT be disabled.
+    // the same listing within the cooldown). This CANNOT be disabled. The key is
+    // site-aware (<source>:<id>) so the guard is independent per site.
     const cooldownHours = Number(process.env.CARS_OFFER_COOLDOWN_HOURS || 24);
-    if (hasIdenticalOffer(target, message, price ?? null)) {
+    const offerKey = offerKeyFor(target, listingId);
+    if (hasIdenticalOffer(offerKey, message, price ?? null)) {
       return {
         content: [
           {
@@ -679,7 +703,7 @@ server.tool(
         ],
       };
     }
-    if (hasRecentOffer(target, cooldownHours)) {
+    if (hasRecentOffer(offerKey, cooldownHours)) {
       return {
         content: [
           {
@@ -762,7 +786,15 @@ server.tool(
         }
       }
       await saveSession();
-      if (sent) recordOffer(target, message, price ?? null);
+      if (sent) recordOffer(offerKey, message, price ?? null);
+      // Also save locally so a reply / price change / sold state can be tracked.
+      saveListing({
+        source: sourceOfUrl(target),
+        id: offerKeyFor(target, listingId).split(':')[1] || target,
+        url: target,
+        note: `offered${price != null ? ' $' + price.toLocaleString() : ''} via make_offer`,
+        price: price ?? null,
+      });
       return {
         content: [
           {
@@ -772,8 +804,8 @@ server.tool(
               'money. Verify the listing independently (PPSR, rego, VIN, inspection) before ' +
               'committing. No consumer protection applies to private sales.\n\n' +
               (sent
-                ? `Submitted your message to the seller for ${target} (opened via ${hitOpen}, sent via "${hitSubmit}"; best-effort - confirm in your account/outbox). This offer is now recorded so it cannot be sent again.`
-                : `Opened the contact form for ${target} via ${hitOpen} and filled your message, but could not click a Send/Submit button (markup may differ).`),
+                ? `Submitted your message to the seller for ${target} (opened via ${hitOpen}, sent via "${hitSubmit}"; best-effort - confirm in your account/outbox). This offer is now recorded so it cannot be sent again, and the listing is saved locally. Use check_saved to watch for a reply indicator / price change.`
+                : `Opened the contact form for ${target} via ${hitOpen} and filled your message, but could not click a Send/Submit button (markup may differ). Saved locally so it is still tracked.`),
           },
         ],
       };
@@ -782,6 +814,23 @@ server.tool(
     }
   },
 );
+
+function sourceOfUrl(u: string): SaveSource {
+  if (/facebook\.com/.test(u)) return 'facebook';
+  if (/gumtree\.com\.au/.test(u)) return 'gumtree';
+  return 'carsales';
+}
+
+function offerKeyFor(url: string, id?: string): string {
+  const src = sourceOfUrl(url);
+  const idPart =
+    id ||
+    (url.match(/([A-Z]{3,4}-AD-\d+)/) || [])[1] ||
+    (url.match(/marketplace\/item\/(\d+)/) || [])[1] ||
+    (url.match(/\/web\/listing\/[^/]*\/(\d+)/) || [])[1] ||
+    url;
+  return `${src}:${idPart}`;
+}
 
 function formatSourceCard(c: ListingCard): string {
   const deal = computeDeal(c);
@@ -1309,6 +1358,263 @@ server.tool(
     const ok = removeWatch(name);
     return {
       content: [{ type: 'text', text: ok ? `Removed watch "${name}".` : `No watch named "${name}".` }],
+    };
+  },
+);
+
+function listingIdFromUrl(url: string): string {
+  return (
+    (url.match(/([A-Z]{3,4}-AD-\d+)/) || [])[1] ||
+    (url.match(/marketplace\/item\/(\d+)/) || [])[1] ||
+    (url.match(/\/web\/listing\/[^/]*\/(\d+)/) || [])[1] ||
+    ''
+  );
+}
+
+server.tool(
+  'save_listing',
+  'Save a car listing LOCALLY so it is tracked for a price drop or when it sells. ' +
+    'Works for carsales, Gumtree and Facebook listings. First call also attempts the ' +
+    'site\'s own Save/Watchlist control (best-effort, like save_vehicle) so it is saved ' +
+    'on the site too. Pairs with list_saved and check_saved.',
+  {
+    url: z.string().optional().describe('Full listing URL (carsales / Gumtree / Facebook)'),
+    listingId: z.string().optional().describe('Listing id (carsales OAG-AD-xxx / FB marketplace id / Gumtree id)'),
+    note: z.string().optional().describe('Optional note, e.g. "no rust - only if <200k km", "verify rego before offer"'),
+    siteNative: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe('Also click the site\'s own Save/Watchlist control (best-effort). Set false to only save locally.'),
+  },
+  async ({ url, listingId, note, siteNative }) => {
+    const target = resolveListingTarget(listingId, url);
+    if (!target) return { content: [{ type: 'text', text: 'Provide listingId or url.' }] };
+    const source = sourceOfUrl(target);
+    const id = listingId || listingIdFromUrl(target) || target;
+    const d = await describeListing(listingId, target, false).catch(() => null);
+    const meta = d?.metadata as Record<string, any> | undefined;
+    const entry = saveListing({
+      source,
+      id,
+      url: target,
+      title: d?.title ?? meta?.title ?? null,
+      price: meta?.price ?? null,
+      priceExGovt: meta?.priceExGovt ?? null,
+      note,
+    });
+    // Best-effort site-native save via the shared headed browser.
+    let native = 'skipped';
+    if (siteNative) {
+      const page = await getPage();
+      try {
+        await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.waitForTimeout(2500);
+        const selectors = [
+          'button:has-text("Save")',
+          'button:has-text("Watchlist")',
+          'a:has-text("Save this")',
+          '[data-testid*="save" i]',
+          'button[aria-label*="save" i]',
+          'a[aria-label*="Save" i]',
+          'button:has-text("Saved")',
+        ];
+        let clicked = false;
+        let hit = '';
+        for (const sel of selectors) {
+          try {
+            const el = page.locator(sel).first();
+            if (await el.count()) {
+              await el.click({ timeout: 5000 });
+              clicked = true;
+              hit = sel;
+              break;
+            }
+          } catch {
+            // next
+          }
+        }
+        await saveSession();
+        native = clicked
+          ? `clicked the site Save control (${hit}; best-effort - confirm in your account)`
+          : 'could not find a Save control on this site (saved locally regardless)';
+      } catch (e) {
+        native = 'site save failed: ' + (e as Error).message + ' (saved locally regardless)';
+      }
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Saved locally (${source}) at ${savedFile()}:\n` +
+            `${entry.title || 'Untitled'} - ${entry.price != null ? '$' + entry.price.toLocaleString() : 'price n/a'}\n` +
+            `${entry.url}\n` +
+            `Site save: ${native}.\n\n` +
+            `Run check_saved to watch it for a price drop / sold status.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'list_saved',
+  'List all locally saved car listings (all sites) with their last known price and ' +
+    'sold/price-drop status.',
+  {},
+  async () => {
+    const list = listSaved();
+    if (!list.length)
+      return { content: [{ type: 'text', text: `No saved listings yet (${savedFile()}).` }] };
+    const lines = list.map((s, i) => {
+      const price = s.price != null ? '$' + s.price.toLocaleString() : 'price n/a';
+      const flags = [
+        s.sold ? 'SOLD' : null,
+        s.lastPrice != null && s.price != null && s.price < s.lastPrice ? `dropped from $${s.lastPrice.toLocaleString()}` : null,
+      ]
+        .filter(Boolean)
+        .join(', ');
+      return `${i + 1}. [${s.source}] ${s.title || 'Untitled'}\n   ${price}${s.note ? ` | note: ${s.note}` : ''}${flags ? ` | ${flags}` : ''}\n   ${s.url}`;
+    });
+    return { content: [{ type: 'text', text: `Saved listings (${savedFile()}):\n\n${lines.join('\n')}` }] };
+  },
+);
+
+server.tool(
+  'check_saved',
+  'Re-fetch every locally saved listing and report CHANGES: a price drop, or that a ' +
+    'listing now appears sold/withdrawn (no longer resolves). Re-runs the listing ' +
+    'lookup through the shared browser, so it works across carsales, Gumtree and Facebook.',
+  {},
+  async () => {
+    const list = listSaved();
+    if (!list.length)
+      return { content: [{ type: 'text', text: 'No saved listings to check.' }] };
+    const reports: string[] = [];
+    for (const s of list) {
+      try {
+        const d = await describeListing(undefined, s.url, false);
+        const meta = d.metadata as Record<string, any> | undefined;
+        const price = meta?.price ?? null;
+        const blocked = meta?.blocked === true || /blocked/i.test(d.text);
+        const change = applyCheck(s.key, { price, sold: blocked });
+        if (change) reports.push(`[${s.source}] ${s.title || s.id}\n${change}\n${s.url}`);
+        // Also refresh stored price/title so list_saved stays current.
+        if (price != null) {
+          const cur = getSaved(s.key);
+          if (cur && cur.price != price) {
+            cur.title = d.title ?? cur.title;
+            cur.price = price;
+            saveListing({ source: cur.source, id: cur.id, url: cur.url, title: cur.title, price, note: cur.note });
+          }
+        }
+      } catch {
+        reports.push(`[${s.source}] ${s.title || s.id}\nCould not fetch (may be unavailable to this network / sold).`);
+      }
+    }
+    if (!reports.length)
+      return { content: [{ type: 'text', text: 'Checked all saved listings - no price drops and none sold.' }] };
+    return { content: [{ type: 'text', text: 'Saved-car changes:\n\n' + reports.join('\n\n') }] };
+  },
+);
+
+server.tool(
+  'remove_saved',
+  'Remove a locally saved listing by its key (<source>:<id>) or URL.',
+  {
+    key: z.string().optional().describe('Saved key, e.g. "carsales:OAG-AD-26136665" or "facebook:123"'),
+    url: z.string().optional().describe('Alternatively, the listing URL'),
+  },
+  async ({ key, url }) => {
+    let k = key;
+    if (!k && url) {
+      const id = listingIdFromUrl(url) || url;
+      k = `${sourceOfUrl(url)}:${id}`;
+    }
+    if (!k) return { content: [{ type: 'text', text: 'Provide key or url.' }] };
+    const ok = removeSaved(k);
+    return { content: [{ type: 'text', text: ok ? `Removed saved listing "${k}".` : `No saved listing "${k}".` }] };
+  },
+);
+
+server.tool(
+  'check_inbox',
+  'Check for seller replies / offer responses by opening the site\'s message inbox in the ' +
+    'shared headed browser and reading what is visible (best-effort). Works for the site of a ' +
+    'given URL, or defaults to carsales. For Facebook it opens Messenger; for Gumtree its ' +
+    'message centre. Reports unread threads/snippets. Because these sites have no stable ' +
+    'message API, this drives the real inbox UI - it is best-effort and depends on markup.',
+  {
+    site: z
+      .enum(['carsales', 'gumtree', 'facebook'])
+      .optional()
+      .describe('Which site inbox to open (default: carsales).'),
+    url: z.string().optional().describe('Optional listing URL to auto-detect the site.'),
+  },
+  async ({ site, url }) => {
+    const s = site || sourceOfUrl(url || '') || 'carsales';
+    const inbox =
+      s === 'facebook'
+        ? 'https://www.facebook.com/messages/'
+        : s === 'gumtree'
+          ? 'https://www.gumtree.com.au/'
+          : 'https://www.carsales.com.au/my-carsales/messages/';
+    const page = await getPage();
+    let html = '';
+    try {
+      await page.goto(inbox, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(3500);
+      html = await page.content();
+      await saveSession();
+    } catch (e) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              `Could not open the ${s} inbox (${inbox}). ` +
+              `This is best-effort - you may need to log in to ${s} first via open_browser. Error: ${(e as Error).message}`,
+          },
+        ],
+      };
+    }
+    // Best-effort: pull text snippets that look like message threads / unread counts.
+    const unreadM = html.match(/(\d+)\s*unread/i) || html.match(/(\d+)\s*new message/i);
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1400);
+    const flagged = /(login|log in|sign in|you must log|verify it's you)/i.test(text);
+    if (flagged && !unreadM)
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              `opened the ${s} inbox but the page indicates it needs a login or verification. ` +
+              `Log in to ${s} via open_browser, then re-run check_inbox. (best-effort)`,
+          },
+        ],
+      };
+    const lines: string[] = [];
+    if (unreadM) lines.push(`Detected unread indicator: ${unreadM[0]}.`);
+    lines.push(`Opened ${s} inbox (${inbox}).`);
+    lines.push(
+      text.length > 40
+        ? 'Visible page text (may contain thread snippets):\n' + text
+        : 'No readable thread text detected from the page (markup-dependent / may need login).',
+    );
+    return {
+      content: [
+        {
+          type: 'text',
+          text: lines.join('\n') + '\n\nNote: this is best-effort. Verify replies in your actual inbox/app before acting.',
+        },
+      ],
     };
   },
 );
