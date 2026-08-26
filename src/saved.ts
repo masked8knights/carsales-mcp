@@ -125,9 +125,25 @@ export function removeSaved(key: string): boolean {
   return true;
 }
 
+/** Optional free push alert (no paid service). Posts to a webhook (ntfy/Discord/Slack). */
+async function postAlert(payload: Record<string, unknown>): Promise<void> {
+  const webhook = process.env.CARS_WATCH_WEBHOOK;
+  if (!webhook) return;
+  try {
+    await fetch(webhook, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // best-effort alert; never break a check on a failed webhook
+  }
+}
+
 /**
  * Apply the current observation of a saved listing and report what changed.
- * Returns a human-readable change summary, or null if nothing changed.
+ * Returns a human-readable change summary, or null if nothing changed. On a
+ * price drop or sold event it also fires a free webhook alert (CARS_WATCH_WEBHOOK).
  */
 export function applyCheck(key: string, current: { price?: number | null; sold?: boolean }): string | null {
   const list = load();
@@ -152,5 +168,8 @@ export function applyCheck(key: string, current: { price?: number | null; sold?:
 
   entry.lastCheckedAt = now;
   save(list);
+  if (changes.length) {
+    void postAlert({ saved: key, title: entry.title, url: entry.url, changes });
+  }
   return changes.length ? changes.join('\n') : null;
 }

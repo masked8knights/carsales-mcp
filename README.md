@@ -77,8 +77,9 @@ Dump a carsales search to CSV with no external service.
   Save/Watchlist control (best-effort, skippable with `siteNative: false`).
 - `list_saved` shows all locally saved listings with price and drop/sold status. `remove_saved` deletes one.
 - `check_saved` re-fetches every saved listing and reports **price drops** or that a listing now looks
-  **sold/withdrawn**. Because saved seeks are stored locally (not tied to a site API), this works
-  reliably across all three sites (FOSS, no paid service).
+  **sold/withdrawn**. Because saved listings are stored locally (not tied to a site API), this works
+  reliably across all three sites (FOSS, no paid service). If you set `CARS_WATCH_WEBHOOK`, a drop or
+  sold event is also pushed to your webhook the moment `check_saved` sees it.
 
 ### `check_inbox`
 Best-effort seller-reply / offer-response check. Opens the site's message inbox (carsales, Gumtree or
@@ -250,7 +251,9 @@ proxy usually restores the photo gallery and detail pages when the IP is challen
 | `CARS_PROXY` | – | Single proxy or comma-separated rotation list |
 | `CARS_COOKIE_FILE` | `~/.carsales-mcp/cookies.json` | Where login session cookies are stored |
 | `CARS_WATCH_FILE` | `~/.carsales-mcp/watches.json` | Where saved searches and listing watches are stored |
-| `CARS_WATCH_WEBHOOK` | – | POST new watch listings here (ntfy, Discord, Slack) for free alerts |
+| `CARS_WATCH_WEBHOOK` | – | POST new watch listings and saved-car price drops / sold alerts (ntfy, Discord, Slack) |
+| `CARS_SAVED_FILE` | `~/.carsales-mcp/saved.json` | Local "saved cars" store (listings you want watched for a drop/sold) |
+| `CARS_PREFS_FILE` | `~/.carsales-mcp/prefs.json` | Where learned buyer preferences are stored |
 | `CARS_CAPTCHA_SOLVER` | `none` | FOSS CAPTCHA help: `buster` (audio-challenge solver). Does not defeat DataDome |
 | `CARS_BUSTER_EXTENSION` | – | Path to your installed Buster extension when `CARS_CAPTCHA_SOLVER=buster` (Firefox build) |
 | `CARS_OFFER_COOLDOWN_HOURS` | `24` | `make_offer` refuses re-contact to the same listing within this window |
