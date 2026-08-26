@@ -111,13 +111,21 @@ with a short reason.
 
 ### Login and authenticated actions
 Some actions need an account: `save_vehicle` (watchlist), `make_offer` (contact seller). Read the
-warning at the top before using them. Two supported login paths, **never your password**:
+warning at the top before using them. Two supported login paths, **never your password**. Both apply to
+**any site the server drives** — carsales, Gumtree and Facebook — because there is **one shared headed
+Camoufox browser**; its cookies are persisted per-domain in `CARS_COOKIE_FILE`, so logging in to a site
+in that window lets the AI act on it as a logged-in user.
 
 **Path A — log in by hand in the visible browser (recommended).** The browser runs headful, so you can
-see it. Call `open_browser` (it opens a URL and leaves the window up), reach in and log in to
-carsales.com.au in that window, then call `auth_status` to confirm. The server persists the session
-cookies — including the DataDome clearance cookie — for reuse, so a warm, authenticated session is the
-best way to reduce blocks. This never asks the bot to type your password.
+see it. Call `open_browser` with the site's login URL (it opens it and leaves the window up), reach in
+and log in in that window, then call `auth_status` to confirm. The server persists that site's session
+cookies — including the DataDome clearance cookie for carsales — for reuse, so a warm, authenticated
+session is the best way to reduce blocks. `auth_status` reports the login state for carsales, Gumtree
+and Facebook at once. This never asks the bot to type your password.
+
+**Run it but keep it invisible:** set `CARS_DISPLAY` to a live X display (e.g. an Xvfb `:99`) and the
+browser stays fully headed and human-behaved but renders offscreen — the AI can drive it while you never
+see a window.
 
 **Path B — import cookies from your own browser.** See `set_auth` and `auth_status`:
 
@@ -178,9 +186,19 @@ npm install -g carsales-mcp
 
 The browser runs **headful** (a real window), not headless. A headless browser is one of the strongest
 bot signals DataDome scores, so it is never used. This needs a display — on WSLg, Windows or a desktop
-you'll see a window (you can watch the agent browse). On a headless server or CI, wrap the process in a
-virtual display instead, e.g. `xvfb-run -a node dist/index.js`, so the browser is still a real headed
-window. If Camoufox fails to launch on Linux, install its system libraries: `npx playwright install-deps firefox`.
+you'll see a window (you can watch the agent browse). If you'd rather it **run but not be visible**,
+point it at a virtual display so it stays fully headed (same fingerprint/behaviour) but renders
+offscreen:
+
+```bash
+Xvfb :99 -screen 0 1366x900x24 &   # or install xvfb / do this once
+CARS_DISPLAY=:99 node dist/index.js
+```
+
+Set `CARS_DISPLAY` to a live X display and Camoufox renders there instead of your screen — the window
+is real and human-behaved, just not shown. On a headless server/CI this is also how to avoid a visible
+window (`xvfb-run -a node dist/index.js`). If Camoufox fails to launch on Linux, install its system
+libraries: `npx playwright install-deps firefox`.
 
 ### 2. Add to your MCP client
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`), **Claude
@@ -233,6 +251,7 @@ proxy usually restores the photo gallery and detail pages when the IP is challen
 | `CARS_OFFERS_FILE` | `~/.carsales-mcp/sent-offers.json` | Append-only log that enforces never sending the same offer twice |
 | `CARS_MIN_DELAY` | `1500` | Minimum ms between navigations (be polite) |
 | `CARS_HUMANIZE` | `1` | Human-like traversal (random jitter + scroll/pause). Set `0` to disable |
+| `CARS_DISPLAY` | – | Render the headed browser offscreen on a live X display (e.g. `:99`) so it runs but stays invisible |
 | `CARS_RETRIES` | `3` | Retry attempts when a DataDome challenge is hit |
 | `CARS_BACKOFF` | `2000` | Backoff ms between retries (doubles each try) |
 | `CARS_SELFTEST_DIR` | `~/.carsales-mcp/selftest` | Where `scripts/selftest.mjs` saves fixtures |

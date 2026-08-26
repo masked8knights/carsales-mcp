@@ -10,6 +10,7 @@ import {
   setAuthCookies,
   saveSession,
   authCookieFile,
+  getCookiesAll,
   ListingCard,
   Page,
   describeGenericListing,
@@ -475,42 +476,53 @@ server.tool(
 
 server.tool(
   'auth_status',
-  'Check whether the current session is logged in to carsales.com.au (i.e. whether ' +
-    'authenticated actions like save_vehicle / make_offer will work).',
+  'Check whether the current session is logged in across the sites the server drives ' +
+    '(carsales, Facebook, Gumtree) - so authenticated actions like save_vehicle / ' +
+    'make_offer (carsales) or a saved login will work. Log in by hand via open_browser; ' +
+    'the shared browser persists each site\'s cookies.',
   {},
   async () => {
     const page = await getPage();
-    const html = await fetchHtml('https://www.carsales.com.au/my-carsales/', page);
-    const loggedIn =
-      html.length >= 6000 &&
-      /(my account|sign out|log out|my carsales|saved (cars|vehicles)|watchlist)/i.test(html);
-    if (loggedIn) await saveSession();
-    return {
-      content: [
-        {
-          type: 'text',
-        text: loggedIn
-          ? 'Logged in to carsales.com.au. Authenticated actions are available.'
-          : 'Could not confirm login. The account page may be blocked from this network, or you may be logged out. Use set_auth with cookies from your browser to enable saving/making offers.',
-        },
-      ],
-    };
+    // carsales: account page presence.
+    let carsales = false;
+    try {
+      const html = await fetchHtml('https://www.carsales.com.au/my-carsales/', page);
+      carsales =
+        html.length >= 6000 &&
+        /(my account|sign out|log out|my carsales|saved (cars|vehicles)|watchlist)/i.test(html);
+    } catch {
+      carsales = false;
+    }
+    // Facebook / Gumtree: no clean account probe, so report via the cookies we
+    // hold (a session cookie for the domain implies a logged-in/visited session).
+    const cookies = await getCookiesAll();
+    const fbSession = cookies.some(
+      (c) => /facebook\.com/.test(c.domain) && /(sb|c_user|xs|datr)/i.test(c.name),
+    );
+    const gumSession = cookies.some((c) => /gumtree\.com/.test(c.domain) && /(session|machId|token)/i.test(c.name));
+    if (carsales || fbSession || gumSession) await saveSession();
+    const lines: string[] = [];
+    lines.push(`carsales: ${carsales ? 'logged in (authenticated actions available)' : 'not confirmed logged in'}`);
+    lines.push(`facebook: ${fbSession ? 'session cookie present (logged in/visited)' : 'no session cookie'}`);
+    lines.push(`gumtree: ${gumSession ? 'session cookie present (logged in/visited)' : 'no session cookie'}`);
+    lines.push('', 'To log in to a site, call open_browser with its URL, sign in in the visible window, then re-run auth_status.');
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
   },
 );
 
 server.tool(
   'open_browser',
-  'Open the shared Camoufox browser to a URL (default carsales.com.au) and leave it ' +
-    'open so you can log in by hand. Use this to build a warm, authenticated session ' +
-    'by reaching into the visible browser window and signing in, then call auth_status ' +
-    'to confirm. Any login/clearance cookies earned are persisted for reuse. This is the ' +
-    'recommended login path - it never asks the bot to type your password.',
+  'Open the shared Camoufox browser to a URL and leave it open so you can log in by hand. ' +
+    'Works for any site the server drives - carsales, Gumtree or Facebook Marketplace. Use it ' +
+    'to build a warm, authenticated session by reaching into the visible heading window and ' +
+    'signing in; the shared browser then persists that site\'s login cookies for reuse, and the ' +
+    'AI can act on it as a logged-in user. Never asks the bot to type a password.',
   {
     url: z
       .string()
       .optional()
       .default('https://www.carsales.com.au/')
-      .describe('URL to open (default carsales.com.au home). Use the login page to sign in.'),
+      .describe('URL to open (default carsales.com.au). Use a site login page to sign in to that site.'),
     waitSeconds: z
       .number()
       .optional()
@@ -526,12 +538,14 @@ server.tool(
     }
     if (waitSeconds > 0) await new Promise((r) => setTimeout(r, waitSeconds * 1000));
     await saveSession();
+    const site =
+      /facebook\.com/.test(url) ? 'Facebook' : /gumtree\.com\.au/.test(url) ? 'Gumtree' : 'carsales';
     return {
       content: [
         {
           type: 'text',
           text:
-            'The shared browser is open at ' + url + '. ' +
+            'The shared browser is open at ' + url + ' (' + site + '). ' +
             'Log in in the visible Camoufox window, then call auth_status to confirm. ' +
             (waitSeconds > 0 ? 'Session cookies were captured after the wait period.' : 'Returned immediately; call auth_status after you finish logging in.'),
         },

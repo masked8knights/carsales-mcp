@@ -137,12 +137,22 @@ async function launchCamoufox(): Promise<Browser> {
   // and let Camoufox geolocate to AU so the location matches the Browser timezone.
   // Camoufox's own C++-level humanize (jittered mouse/keyboard) is the strongest
   // behavioural defence available, so it stays on unless explicitly disabled.
+  // Optional offscreen display. Set CARS_DISPLAY to a live X display (e.g. an Xvfb
+  // virtual framebuffer like ":99") to keep the browser fully headed/fingerprinted
+  // but INVISIBLE - the real window renders on the virtual display instead of your
+  // screen. This is the "use it but don't see it" mode. Requires that display to be
+  // running (e.g. `Xvfb :99 &`). Left unset, the window shows on the real display.
+  const DISPLAY_OVERRIDE = process.env.CARS_DISPLAY || '';
   const opts: any = await mod.launchOptions({
     os: 'windows',
     geoip: 'AU',
     locale: 'en-AU',
     ...(HUMANIZE ? { humanize: true } : {}),
+    ...(DISPLAY_OVERRIDE ? { virtual_display: DISPLAY_OVERRIDE } : {}),
   });
+  if (DISPLAY_OVERRIDE) {
+    console.error(`[carsales-mcp] Rendering browser offscreen on ${DISPLAY_OVERRIDE} (CARS_DISPLAY).`);
+  }
   // Privacy / tracking: block third-party cookies AND enable Firefox's Enhanced
   // Tracking Protection, but keep FIRST-PARTY cookies. First-party cookies are
   // essential here - the DataDome clearance cookie and the login session are both
@@ -310,6 +320,23 @@ export async function saveSession(): Promise<boolean> {
   if (!sharedContext) return false;
   await saveCookiesToFile(sharedContext);
   return true;
+}
+
+/** Read all cookies currently in the shared browser context (all domains). */
+export async function getCookiesAll(): Promise<any[]> {
+  if (!sharedContext) {
+    // Fall back to the persisted cookie file if the browser hasn't opened yet.
+    try {
+      return JSON.parse(fs.readFileSync(COOKIE_FILE, 'utf8'));
+    } catch {
+      return [];
+    }
+  }
+  try {
+    return await sharedContext.cookies();
+  } catch {
+    return [];
+  }
 }
 
 /** Import cookies (e.g. exported from your own logged-in browser) for reuse. */
