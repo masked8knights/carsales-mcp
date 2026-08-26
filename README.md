@@ -71,7 +71,7 @@ State files (all in `~/.carsales-mcp/`, settable): `CARS_COOKIE_FILE` (cookies),
   condition, postcode/radius, keyword, price/year/odometer, and sort. Also filters
   to good deals.
 - `search_facebook_cars` / `search_gumtree_cars` native search for those sites.
-- `search_all_cars` one call across all three, deduped and sorted by deal quality.
+- `search_all_cars` one call across all three, deduped, sorted cheapest first (use `sort: "price_high"` to reverse).
 
 **Inspect a listing**
 - `get_listing_details` full details by id or URL, any site. Pass `includeImages: true`
