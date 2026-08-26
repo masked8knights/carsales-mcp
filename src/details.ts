@@ -90,18 +90,48 @@ export function parseDetails(html: string, id: string, url: string): ListingDeta
   const badge = html.match(/(FAIR PRICE|GOOD PRICE|GREAT PRICE|BAD PRICE)/);
   if (badge) details.priceBadge = badge[1];
 
-  // Photos
+  // Photos. Only real seller photos of THIS car, not carsales' stock/editorial
+  // library images, promo shots, avatars, trust badges or payment assets. Mixing
+  // those in makes vision inspection meaningless (we saw several listings whose
+  // "gallery" was mostly a red promo Colt, not the car for sale). Carsales'
+  // genuine seller photos come from the private/upload bucket (pxcrush
+  // 'carsales/cars/private' or 'cars/private'), not 'editorial.pxcrush'.
   const photos = [
     ...html.matchAll(/<img[^>]+src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/gi),
-  ].map((m) => m[1]);
+  ]
+    .map((m) => m[1])
+    .filter((u) => /pxcrush\.net\/(?:carsales\/)?cars\/(?:cars\/)?private\//i.test(u))
+    .filter((u) => !/editorial\.pxcrush/i.test(u));
   details.photos = [...new Set(photos)].slice(0, 12);
 
-  // Description: look for a meta description or the first long paragraph.
-  const metaDesc = html.match(/<meta[^>]+name="description"[^>]+content="([^"]+)"/i);
-  if (metaDesc) details.description = metaDesc[1];
-  else {
-    const p = html.match(/<p[^>]*>([^<]{80,})<\/p>/);
-    if (p) details.description = p[1].trim();
+  // Description: the seller's own comments ("Comments from the seller" block),
+  // where owners actually say what's wrong with the car (scratches, rust, needed
+  // repairs for roadworthy, etc.). This is a truncated 4-line span (-webkit-line
+  // clamp) with a "read more". Grab that block, strip the clamp span tags to get
+  // the full text. Fall back to the meta description only if no such block exists.
+  // The comments block: <div data-id="details:body:comments"> ... <div style="-webkit-line-clamp"> <span>TEXT</span> ...
+  // Capture from the line-clamp div up to ~2KB, then strip all tags and entity
+  // refs; the longest contiguous text therein is the seller's write-up.
+  const cIdx = html.indexOf('data-id="details:body:comments"');
+  if (cIdx >= 0) {
+    const clampIdx = html.indexOf('-webkit-line-clamp', cIdx);
+    if (clampIdx >= 0) {
+      const piece = html.slice(clampIdx, clampIdx + 2500);
+      const textOnly = piece
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\s+/g, ' ')
+        .replace(/-webkit-line-clamp:\s*\d+;?/gi, ' ')
+        .trim();
+      if (textOnly.length > 15) details.description = textOnly;
+    }
+  }
+  if (!details.description) {
+    const metaDesc = html.match(/<meta[^>]+name="description"[^>]+content="([^"]+)"/i);
+    if (metaDesc) details.description = metaDesc[1];
   }
 
   // Features / specification bullet list (best effort).
