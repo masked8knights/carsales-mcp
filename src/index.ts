@@ -899,10 +899,15 @@ server.tool(
     maxYear: z.number().optional().describe('Maximum build year'),
     radius: z.number().optional().default(50).describe('Facebook search radius in km around the location'),
     goodDealsOnly: z.boolean().optional().default(false).describe('Only return GOOD/GREAT deals'),
+    sort: z
+      .enum(['price_low', 'price_high'])
+      .optional()
+      .default('price_low')
+      .describe('Sort order. Default price_low = cheapest first (AUD).'),
     cluster: z.boolean().optional().default(false).describe('Append a "by area" grouping of results'),
     limit: z.number().optional().default(30).describe('Max total results to return'),
   },
-  async ({ make, model, location, state, minPrice, maxPrice, minYear, maxYear, radius, goodDealsOnly, cluster, limit }) => {
+  async ({ make, model, location, state, minPrice, maxPrice, minYear, maxYear, radius, goodDealsOnly, sort, cluster, limit }) => {
     const query = [make, model].filter(Boolean).join(' ');
     // Sequential, not Promise.all: carsales and gumtree both use page.goto() on the
     // shared singleton page, so parallel legs drive the same page concurrently and
@@ -936,8 +941,12 @@ server.tool(
     if (maxYear != null) cards = cards.filter((c) => (c.year ?? Infinity) <= maxYear);
     const deals = new Map(cards.map((c) => [c.source + ':' + c.id, computeDeal(c)]));
     if (goodDealsOnly) cards = cards.filter((c) => deals.get(c.source + ':' + c.id)!.isGoodDeal);
-    // Best deals first.
-    cards.sort((a, b) => deals.get(b.source + ':' + b.id)!.score - deals.get(a.source + ':' + a.id)!.score);
+    // Sort by price low to high (default) or high to low. Price unknown sorts last.
+    if (sort === 'price_high') {
+      cards.sort((a, b) => (b.price ?? -Infinity) - (a.price ?? -Infinity));
+    } else {
+      cards.sort((a, b) => (a.price ?? Infinity) - (b.price ?? Infinity));
+    }
     const limited = cards.slice(0, limit ?? 30);
     if (!limited.length)
       return { content: [{ type: 'text', text: 'No combined listings matched your criteria.' }] };
