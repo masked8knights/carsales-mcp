@@ -20,6 +20,7 @@ export async function searchCars(p: SearchParams): Promise<ListingCard[]> {
   // transmission, state, fuel) - it applies carsales' own search (which the
   // facet URLs cannot). This is what lets us reproduce "automatic, under $4k,
   // NSW" exactly as the user sees it. Falls back to the facet URL otherwise.
+  const usedPredicate = !!buildPredicateUrl(p);
   const url = buildPredicateUrl(p) || buildSearchUrl(p);
   const html = await fetchSearchHtml(url, page);
   if (isBlocked(html)) {
@@ -27,7 +28,15 @@ export async function searchCars(p: SearchParams): Promise<ListingCard[]> {
     // it explicitly so callers can report "blocked" instead of "0 cars".
     throw new DataDomeBlockedError();
   }
-  return parseListings(html);
+  const cards = parseListings(html);
+  // The predicate URL filters server-side (e.g. GenericGearType.Automatic), so
+  // every returned card IS that gearbox regardless of the card-text guess. Overwrite
+  // the unreliable title-derived transmission field with the requested filter.
+  if (usedPredicate && p.transmission) {
+    const label = /manual/i.test(p.transmission) ? 'Manual' : 'Automatic';
+    for (const c of cards) if (c.source === 'carsales') c.transmission = label;
+  }
+  return cards;
 }
 
 async function carapisSearch(p: SearchParams): Promise<ListingCard[] | null> {

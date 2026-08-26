@@ -669,7 +669,10 @@ export function parseListings(html: string): ListingCard[] {
       price: base.price ?? htmlMeta.price ?? null,
       priceExGovt: base.priceExGovt ?? htmlMeta.priceExGovt ?? null,
       odometer: base.odometer ?? htmlMeta.odometer ?? null,
-      transmission: htmlMeta.transmission ?? null,
+      // Prefer the structured JSON-LD transmission (accurate), else the HTML chip.
+      // do NOT fall back to the title-keyword guess (parseCardSegment) - it misreads
+      // model names like "Manual AWD" as the gearbox type.
+      transmission: base.transmission ?? htmlMeta.transmission ?? null,
       fuelType: htmlMeta.fuelType ?? null,
       bodyType: base.bodyType ?? htmlMeta.bodyType ?? null,
       engine: htmlMeta.engine ?? null,
