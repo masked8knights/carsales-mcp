@@ -1,5 +1,5 @@
 import { ListingCard, getPage, fetchSearchHtml, parseListings, isBlocked, DataDomeBlockedError } from './browser.js';
-import { buildSearchUrl, SearchParams } from './url.js';
+import { buildSearchUrl, buildPredicateUrl, SearchParams } from './url.js';
 
 /**
  * Provider strategy (mirrors secondhand-mcp's API + scraping balance):
@@ -16,7 +16,11 @@ export async function searchCars(p: SearchParams): Promise<ListingCard[]> {
     }
   }
   const page = await getPage();
-  const url = buildSearchUrl(p);
+  // Prefer the server-side predicate URL when there are real filters (price,
+  // transmission, state, fuel) - it applies carsales' own search (which the
+  // facet URLs cannot). This is what lets us reproduce "automatic, under $4k,
+  // NSW" exactly as the user sees it. Falls back to the facet URL otherwise.
+  const url = buildPredicateUrl(p) || buildSearchUrl(p);
   const html = await fetchSearchHtml(url, page);
   if (isBlocked(html)) {
     // A challenge page is not "no results" - it is a bot-protection block. Signal
